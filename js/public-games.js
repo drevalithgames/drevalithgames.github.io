@@ -1,9 +1,13 @@
 /**
  * ============================================================================
- * DREVALITH GAMES™ — PUBLIC REALTIME GAME STORE, RAZORPAY & PRIVATE KEY UI
+ * DREVALITH GAMES™ — PUBLIC STORE, PLAYER AUTH, PURCHASES & UPDATES UI (v5)
  * ============================================================================
- * Renders uploaded studio games into #live-published-games using the exact
- * Drevalith Games™ .release-banner template without altering the rest of the site.
+ * Preserves 100% of original Drevalith Games™ HTML/CSS/animations untouched
+ * while adding:
+ *   - Player Sign Up (with real Email Verification Link before account creation)
+ *   - Player Sign In + Password Reset
+ *   - My Purchases Library (permanent cloud access + 1-click Update File downloads!)
+ *   - Streaming .ZIP download buttons (up to 500 MB + Google Drive, zero permission errors)
  * ============================================================================
  */
 
@@ -16,7 +20,16 @@
     games: []
   };
 
-  // Escape HTML safely to prevent XSS
+  let playerAuthState = {
+    user: null,
+    pendingVerificationEmail: "",
+    purchases: {}
+  };
+
+  let activeAuthTab = "login"; // "login" | "signup" | "verify"
+  let pendingCheckoutGameId = "";
+  let verificationPollInterval = null;
+
   function esc(str) {
     return String(str ?? "")
       .replace(/&/g, "&amp;")
@@ -35,7 +48,6 @@
     return lines.map((p) => `<p>${esc(p)}</p>`).join("");
   }
 
-  // Inject Store-Specific Modal & Unlocked Button Styles (matching Drevalith variables)
   function injectStoreStyles() {
     if (document.getElementById("drevalith-store-styles")) return;
     const style = document.createElement("style");
@@ -47,10 +59,10 @@
         background: linear-gradient(135deg, #16a34a 0%, #0d7a35 100%);
         color: #ffffff;
         text-decoration: none;
-        padding: 0.94rem 1.9rem;
+        padding: 0.94rem 1.85rem;
         border-radius: 8px;
         font-weight: 800;
-        font-size: 0.9rem;
+        font-size: 0.88rem;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         border: 1px solid rgba(74, 222, 128, 0.45);
@@ -62,9 +74,37 @@
         gap: 0.6rem;
         font-family: inherit;
       }
-      .btn-download-unlocked:hover {
+      .btn-download-unlocked:hover:not(:disabled) {
         transform: translateY(-3px) scale(1.02);
         box-shadow: 0 12px 34px rgba(22, 163, 74, 0.68);
+      }
+      .btn-download-unlocked:disabled {
+        opacity: 0.8;
+        cursor: wait;
+      }
+      .btn-download-update {
+        position: relative;
+        overflow: hidden;
+        background: linear-gradient(135deg, #f59e0b 0%, #ea580c 100%);
+        color: #ffffff;
+        padding: 0.94rem 1.85rem;
+        border-radius: 8px;
+        font-weight: 900;
+        font-size: 0.88rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        border: 1px solid rgba(251, 191, 36, 0.65);
+        box-shadow: 0 8px 30px rgba(234, 88, 12, 0.5);
+        transition: transform 0.25s ease, box-shadow 0.25s ease;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        font-family: inherit;
+      }
+      .btn-download-update:hover:not(:disabled) {
+        transform: translateY(-3px) scale(1.02);
+        box-shadow: 0 14px 36px rgba(234, 88, 12, 0.72);
       }
       .btn-key-trigger {
         background: rgba(242, 53, 25, 0.09);
@@ -108,6 +148,11 @@
         border-color: rgba(74, 222, 128, 0.4);
         color: #bbf7d0;
       }
+      .unlock-status-strip.update-ready {
+        background: rgba(245, 158, 11, 0.14);
+        border-color: rgba(251, 191, 36, 0.52);
+        color: #fde68a;
+      }
       .link-subtle-btn {
         background: none;
         border: none;
@@ -119,9 +164,7 @@
         font-family: inherit;
         padding: 0;
       }
-      .link-subtle-btn:hover {
-        color: #ffffff;
-      }
+      .link-subtle-btn:hover { color: #ffffff; }
       .price-pill-highlight {
         display: inline-flex;
         align-items: center;
@@ -139,6 +182,94 @@
         background: rgba(22, 163, 74, 0.18);
         border-color: rgba(74, 222, 128, 0.5);
         color: #86efac;
+      }
+      .nav-update-dot {
+        display: inline-block;
+        padding: 0.12rem 0.48rem;
+        margin-left: 0.35rem;
+        border-radius: 999px;
+        background: #f59e0b;
+        color: #090c14;
+        font-size: 0.66rem;
+        font-weight: 900;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        vertical-align: middle;
+      }
+
+      /* Player Account & Purchases Page */
+      .drev-account-shell {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 2.2rem 1.25rem 4rem 1.25rem;
+      }
+      .drev-auth-card {
+        max-width: 490px;
+        margin: 1rem auto;
+        background: linear-gradient(145deg, rgba(18, 23, 38, 0.95) 0%, rgba(9, 12, 20, 0.98) 100%);
+        border: 1px solid rgba(242, 53, 25, 0.42);
+        border-radius: 18px;
+        padding: 2rem;
+        box-shadow: 0 24px 65px rgba(0, 0, 0, 0.78);
+      }
+      .drev-auth-tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.5rem;
+        padding: 0.35rem;
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid var(--border);
+        margin-bottom: 1.35rem;
+      }
+      .drev-auth-tab {
+        padding: 0.68rem 0.8rem;
+        border-radius: 8px;
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        font-weight: 800;
+        font-size: 0.83rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        cursor: pointer;
+        font-family: inherit;
+        transition: all 0.2s ease;
+      }
+      .drev-auth-tab.active {
+        background: var(--accent);
+        color: #fff;
+        box-shadow: 0 6px 18px rgba(242, 53, 25, 0.38);
+      }
+      .drev-purchase-card {
+        display: grid;
+        grid-template-columns: 200px 1fr;
+        gap: 1.5rem;
+        padding: 1.45rem;
+        border-radius: 16px;
+        background: linear-gradient(145deg, rgba(17, 22, 35, 0.92), rgba(9, 12, 20, 0.96));
+        border: 1px solid var(--border);
+        margin-bottom: 1.15rem;
+        align-items: center;
+      }
+      .drev-purchase-card.has-update {
+        border-color: rgba(251, 191, 36, 0.62);
+        box-shadow: 0 12px 38px rgba(234, 88, 12, 0.18);
+      }
+      .drev-purchase-cover {
+        width: 100%;
+        height: 135px;
+        object-fit: cover;
+        border-radius: 11px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+      @media (max-width: 720px) {
+        .drev-purchase-card {
+          grid-template-columns: 1fr;
+        }
+        .drev-purchase-cover {
+          height: 185px;
+        }
       }
 
       /* Modals */
@@ -189,9 +320,7 @@
         color: #fff;
         border-color: var(--accent);
       }
-      .drev-field {
-        margin-bottom: 1rem;
-      }
+      .drev-field { margin-bottom: 1rem; }
       .drev-field label {
         display: block;
         font-size: 0.76rem;
@@ -231,6 +360,7 @@
         font-size: 0.85rem;
         margin-bottom: 1rem;
         display: none;
+        line-height: 1.45;
       }
       .drev-alert.error {
         display: block;
@@ -244,8 +374,12 @@
         border: 1px solid rgba(74, 222, 128, 0.45);
         color: #bbf7d0;
       }
-
-      /* Razorpay Sandbox Simulator Styling */
+      .drev-alert.info {
+        display: block;
+        background: rgba(245, 158, 11, 0.14);
+        border: 1px solid rgba(251, 191, 36, 0.45);
+        color: #fde68a;
+      }
       .rzp-sim-header {
         background: linear-gradient(135deg, #f23519 0%, #b91c08 100%);
         margin: -1.85rem -1.85rem 1.3rem -1.85rem;
@@ -282,7 +416,7 @@
         bottom: 1.5rem;
         right: 1.5rem;
         z-index: 1100;
-        max-width: 390px;
+        max-width: 400px;
         padding: 0.95rem 1.25rem;
         border-radius: 11px;
         background: #121827;
@@ -303,6 +437,373 @@
     document.head.appendChild(style);
   }
 
+  // --------------------------------------------------------------------------
+  // Inject Navbar Button & #page-account View Without Touching Original HTML!
+  // --------------------------------------------------------------------------
+  function ensurePlayerAccountPageAndNav() {
+    const nav = document.querySelector("header nav");
+    if (nav && !document.getElementById("drev-nav-account-btn")) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.id = "drev-nav-account-btn";
+      btn.className = "nav-btn";
+      btn.setAttribute("data-target", "account");
+      btn.textContent = "Sign In / Purchases";
+      btn.onclick = () => window.switchPage("account");
+      const itchBtn = nav.querySelector(".itch-link-btn");
+      if (itchBtn) nav.insertBefore(btn, itchBtn);
+      else nav.appendChild(btn);
+    }
+
+    const mainEl = document.querySelector("main");
+    if (mainEl && !document.getElementById("page-account")) {
+      const sec = document.createElement("div");
+      sec.id = "page-account";
+      sec.className = "page-view";
+      sec.innerHTML = `<div class="drev-account-shell" id="drev-account-mount"></div>`;
+      mainEl.appendChild(sec);
+    }
+
+    // Extend switchPage cleanly so 'account' works alongside 'home', 'games', 'studio'
+    if (typeof window.switchPage === "function" && !window.__drevWrappedSwitchPage) {
+      const origSwitch = window.switchPage;
+      window.__drevWrappedSwitchPage = true;
+      window.switchPage = function (target, pushHash = true) {
+        const accountPage = document.getElementById("page-account");
+        const navBtn = document.getElementById("drev-nav-account-btn");
+        if (target === "account" || target === "purchases") {
+          document.querySelectorAll(".page-view").forEach((el) => {
+            el.classList.toggle("active", el.id === "page-account");
+          });
+          document.querySelectorAll(".nav-btn").forEach((b) => {
+            b.classList.toggle("active", b.getAttribute("data-target") === "account");
+          });
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          if (pushHash) history.replaceState(null, "", "#account");
+          renderAccountAndPurchasesPage();
+          return;
+        }
+        if (accountPage) accountPage.classList.remove("active");
+        if (navBtn) navBtn.classList.remove("active");
+        origSwitch(target, pushHash);
+      };
+    }
+  }
+
+  function countAvailableUpdates() {
+    if (!playerAuthState.user) return 0;
+    const purchases = playerAuthState.purchases || {};
+    const games = currentStoreState.games || [];
+    let count = 0;
+    for (const gid of Object.keys(purchases)) {
+      const g = games.find((x) => x.id === gid);
+      if (g && Store.hasGameUpdateAvailable(g, purchases[gid])) count += 1;
+    }
+    return count;
+  }
+
+  function updateNavbarAccountLabel() {
+    const btn = document.getElementById("drev-nav-account-btn");
+    if (!btn) return;
+    if (playerAuthState.user) {
+      const totalOwned = Object.keys(playerAuthState.purchases || {}).length;
+      const updatesCount = countAvailableUpdates();
+      btn.innerHTML =
+        `My Purchases (${totalOwned})` +
+        (updatesCount > 0 ? `<span class="nav-update-dot">${updatesCount} Update</span>` : "");
+    } else {
+      btn.textContent = "Sign In / Purchases";
+    }
+  }
+
+  function startAutoVerificationPolling() {
+    stopAutoVerificationPolling();
+    verificationPollInterval = setInterval(async () => {
+      if (activeAuthTab !== "verify" || playerAuthState.user) {
+        stopAutoVerificationPolling();
+        return;
+      }
+      try {
+        const res = await Store.checkAndCompletePlayerVerification();
+        if (res && res.verified) {
+          stopAutoVerificationPolling();
+          showToast("✅ Email verified! Your Drevalith Account is now active.");
+          handlePostLoginContinuation();
+        }
+      } catch (_) {}
+    }, 4000);
+  }
+
+  function stopAutoVerificationPolling() {
+    if (verificationPollInterval) {
+      clearInterval(verificationPollInterval);
+      verificationPollInterval = null;
+    }
+  }
+
+  function handlePostLoginContinuation() {
+    renderAccountAndPurchasesPage();
+    renderPublishedGames();
+    if (pendingCheckoutGameId) {
+      const gid = pendingCheckoutGameId;
+      pendingCheckoutGameId = "";
+      window.switchPage("games");
+      setTimeout(() => startGamePayment(gid, null), 200);
+    }
+  }
+
+  function renderAccountAndPurchasesPage() {
+    const mount = document.getElementById("drev-account-mount");
+    if (!mount) return;
+    updateNavbarAccountLabel();
+
+    // STATE A: SIGNED IN TO VERIFIED PLAYER ACCOUNT -> SHOW MY PURCHASES & UPDATES!
+    if (playerAuthState.user) {
+      stopAutoVerificationPolling();
+      const u = playerAuthState.user;
+      const purchasesMap = playerAuthState.purchases || {};
+      const purchaseIds = Object.keys(purchasesMap).sort(
+        (a, b) => (purchasesMap[b].purchasedAt || 0) - (purchasesMap[a].purchasedAt || 0)
+      );
+      const updatesCount = countAvailableUpdates();
+
+      const cardsHtml = !purchaseIds.length
+        ? `
+          <div style="text-align:center;padding:3rem 1.5rem;border:1px dashed var(--border);border-radius:16px;background:rgba(255,255,255,0.02);">
+            <div style="font-size:2.2rem;margin-bottom:0.65rem;">🎮</div>
+            <h3 style="font-size:1.25rem;font-weight:900;text-transform:uppercase;margin-bottom:0.45rem;">No Purchased Games Yet</h3>
+            <p style="color:var(--text-muted);font-size:0.9rem;max-width:460px;margin:0 auto 1.35rem auto;">
+              Every game you buy (or unlock with a Studio Key) while signed in is permanently saved here — including free access to all future game updates!
+            </p>
+            <button type="button" class="btn-primary" style="border:none;cursor:pointer;" onclick="window.switchPage('games')">
+              Explore Studio Games →
+            </button>
+          </div>
+        `
+        : purchaseIds
+            .map((gid) => {
+              const p = purchasesMap[gid];
+              const liveGame = (currentStoreState.games || []).find((g) => g.id === gid);
+              const title = (liveGame && liveGame.title) || p.gameTitle || "Drevalith Game";
+              const cover = (liveGame && liveGame.coverImageUrl) || p.coverImageUrl || "";
+              const liveVersion = (liveGame && liveGame.version) || p.purchasedVersion || "v1.0.0";
+              const dlVersion = p.lastDownloadedVersion || p.purchasedVersion || "v1.0.0";
+              const sizeLabel = (liveGame && liveGame.zipSizeFormatted) || "ZIP Archive";
+              const hasUpdate = liveGame ? Store.hasGameUpdateAvailable(liveGame, p) : false;
+              const patchNotes = liveGame && liveGame.updateNotes ? liveGame.updateNotes : "";
+              const dateStr = p.purchasedAt
+                ? new Date(p.purchasedAt).toLocaleDateString()
+                : "Verified";
+
+              return `
+                <div class="drev-purchase-card ${hasUpdate ? "has-update" : ""}">
+                  <div>
+                    ${
+                      cover
+                        ? `<img src="${esc(cover)}" alt="${esc(title)}" class="drev-purchase-cover" />`
+                        : `<div class="drev-purchase-cover" style="display:flex;align-items:center;justify-content:center;background:#111827;color:var(--text-muted);font-weight:800;">DREVALITH</div>`
+                    }
+                  </div>
+                  <div>
+                    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:0.55rem;margin-bottom:0.45rem;">
+                      <span class="price-pill-highlight free" style="font-size:0.72rem;padding:0.22rem 0.65rem;">
+                        ✔ Purchased &amp; Owned
+                      </span>
+                      <span style="font-size:0.78rem;color:var(--text-muted);">
+                        Current Build: <strong style="color:#fff;">${esc(liveVersion)}</strong>
+                      </span>
+                      ${
+                        hasUpdate
+                          ? `<span style="padding:0.24rem 0.72rem;border-radius:999px;background:rgba(245,158,11,0.22);border:1px solid rgba(251,191,36,0.7);color:#fde68a;font-size:0.73rem;font-weight:900;text-transform:uppercase;letter-spacing:0.06em;">
+                               🔥 New Update Available (${esc(dlVersion)} → ${esc(liveVersion)})
+                             </span>`
+                          : `<span style="font-size:0.76rem;color:#86efac;font-weight:700;">● Up to Date</span>`
+                      }
+                    </div>
+
+                    <h3 style="font-size:1.4rem;font-weight:900;text-transform:uppercase;margin-bottom:0.3rem;">${esc(title)}</h3>
+                    <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.75rem;">
+                      Purchased: ${esc(dateStr)}
+                      ${p.paymentId ? ` &nbsp;•&nbsp; Receipt: <code>${esc(p.paymentId)}</code>` : " &nbsp;•&nbsp; Unlocked via Studio Key"}
+                      &nbsp;•&nbsp; Package: <strong>${esc(sizeLabel)}</strong>
+                    </div>
+
+                    ${
+                      hasUpdate && patchNotes
+                        ? `<div style="margin-bottom:0.9rem;padding:0.7rem 0.95rem;border-radius:9px;background:rgba(245,158,11,0.1);border:1px solid rgba(251,191,36,0.35);font-size:0.83rem;color:#fef3c7;">
+                             <strong>Update Notes (${esc(liveVersion)}):</strong> ${esc(patchNotes)}
+                           </div>`
+                        : ""
+                    }
+
+                    <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;">
+                      ${
+                        hasUpdate
+                          ? `<button type="button" class="btn-download-update" onclick="window.DrevalithPublicUI.download('${esc(gid)}', this, true)">
+                               <span>🔄</span>
+                               <span>Download Update File (${esc(liveVersion)} .ZIP)</span>
+                             </button>`
+                          : ""
+                      }
+                      <button type="button" class="btn-download-unlocked" onclick="window.DrevalithPublicUI.download('${esc(gid)}', this, false)">
+                        <span>⬇</span>
+                        <span>${hasUpdate ? "Download Full Latest Build (.ZIP)" : `Download Game (${esc(liveVersion)} .ZIP)`}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              `;
+            })
+            .join("");
+
+      mount.innerHTML = `
+        <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:1.8rem;padding-bottom:1.25rem;border-bottom:1px solid var(--border);">
+          <div>
+            <span class="section-tag">Verified Player Library // Cloud Synced</span>
+            <h2 style="font-size:2rem;font-weight:900;text-transform:uppercase;margin-top:0.2rem;">My Purchased Games &amp; Updates</h2>
+            <p style="color:var(--text-muted);font-size:0.88rem;margin-top:0.25rem;">
+              Signed in as <strong style="color:#fff;">${esc(u.email)}</strong>
+              <span style="color:#4ade80;font-weight:800;margin-left:0.4rem;">✔ Email Verified</span>
+            </p>
+          </div>
+          <div style="display:flex;gap:0.7rem;align-items:center;">
+            <button type="button" class="btn-secondary" onclick="window.switchPage('games')">Browse Store</button>
+            <button type="button" class="btn-secondary" style="border-color:rgba(239,68,68,0.45);color:#fca5a5;" onclick="window.DrevalithPublicUI.logoutPlayer()">
+              Sign Out
+            </button>
+          </div>
+        </div>
+
+        ${
+          updatesCount > 0
+            ? `<div class="drev-alert info" style="display:block;margin-bottom:1.35rem;">
+                 🔥 <strong>${updatesCount} Game Update${updatesCount > 1 ? "s" : ""} Ready!</strong> Click <strong>"Download Update File"</strong> below to download the latest updated build for free.
+               </div>`
+            : ""
+        }
+
+        <div>${cardsHtml}</div>
+      `;
+      return;
+    }
+
+    // STATE B: WAITING FOR EMAIL LINK VERIFICATION
+    if (activeAuthTab === "verify" || playerAuthState.pendingVerificationEmail) {
+      activeAuthTab = "verify";
+      startAutoVerificationPolling();
+      const targetEmail = playerAuthState.pendingVerificationEmail || "your email";
+      mount.innerHTML = `
+        <div class="drev-auth-card">
+          <span class="section-tag">Email Verification Required</span>
+          <h2 style="font-size:1.55rem;font-weight:900;text-transform:uppercase;margin:0.3rem 0 0.6rem 0;">
+            Verify Your Email Link
+          </h2>
+          <p style="color:var(--text-muted);font-size:0.9rem;line-height:1.55;margin-bottom:1.1rem;">
+            We sent a verification link directly to <strong style="color:#fff;">${esc(targetEmail)}</strong>.<br/>
+            <span style="font-size:0.82rem;">(Check your <strong>Inbox</strong> and <strong>Spam / Promotions</strong> folder.)</span>
+          </p>
+
+          <div id="drev-auth-alert" class="drev-alert info" style="display:block;">
+            ⏳ Waiting for you to click the verification link in your email... Your account in Firebase is only created <strong>after</strong> your email is verified!
+          </div>
+
+          <div style="display:grid;gap:0.7rem;margin-top:1.15rem;">
+            <button type="button" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;" onclick="window.DrevalithPublicUI.completeEmailVerify(this)">
+              ✅ I Clicked the Verification Link — Complete Sign Up
+            </button>
+            <button type="button" class="btn-secondary" style="width:100%;text-align:center;" onclick="window.DrevalithPublicUI.resendVerify(this)">
+              🔁 Resend Verification Email
+            </button>
+            <button type="button" class="link-subtle-btn" style="margin-top:0.35rem;text-align:center;" onclick="window.DrevalithPublicUI.switchAuthTab('login')">
+              ← Use a Different Email / Back to Sign In
+            </button>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    // STATE C: LOGGED OUT -> SIGN IN OR SIGN UP FORM
+    stopAutoVerificationPolling();
+    const isSignup = activeAuthTab === "signup";
+    mount.innerHTML = `
+      <div class="drev-auth-card">
+        <span class="section-tag">Drevalith Player Account // Cloud Library</span>
+        <h2 style="font-size:1.6rem;font-weight:900;text-transform:uppercase;margin:0.25rem 0 0.45rem 0;">
+          ${isSignup ? "Create Verified Account" : "Player Sign In"}
+        </h2>
+        <p style="color:var(--text-muted);font-size:0.87rem;margin-bottom:1.2rem;">
+          ${
+            pendingCheckoutGameId
+              ? "Sign in or create your verified account first so your purchase &amp; all future game updates are permanently saved to <strong>My Purchases</strong>!"
+              : "Access your purchased games anytime and download new game updates for free."
+          }
+        </p>
+
+        <div class="drev-auth-tabs">
+          <button type="button" class="drev-auth-tab ${!isSignup ? "active" : ""}" onclick="window.DrevalithPublicUI.switchAuthTab('login')">
+            🔐 Sign In
+          </button>
+          <button type="button" class="drev-auth-tab ${isSignup ? "active" : ""}" onclick="window.DrevalithPublicUI.switchAuthTab('signup')">
+            ✉️ Sign Up (Verify Email)
+          </button>
+        </div>
+
+        <div id="drev-auth-alert" class="drev-alert"></div>
+
+        ${
+          isSignup
+            ? `
+          <form onsubmit="window.DrevalithPublicUI.submitSignup(event)">
+            <div class="drev-field">
+              <label for="drev-signup-name">Player Name (Optional)</label>
+              <input type="text" id="drev-signup-name" class="drev-input" placeholder="Your gamer tag or name" autocomplete="name" />
+            </div>
+            <div class="drev-field">
+              <label for="drev-signup-email">Email Address *</label>
+              <input type="email" id="drev-signup-email" class="drev-input" placeholder="you@gmail.com" autocomplete="email" required />
+            </div>
+            <div class="drev-field">
+              <label for="drev-signup-pass">Create Password (Min 6 Characters) *</label>
+              <input type="password" id="drev-signup-pass" class="drev-input" placeholder="••••••••" minlength="6" autocomplete="new-password" required />
+            </div>
+            <div class="drev-field">
+              <label for="drev-signup-pass2">Confirm Password *</label>
+              <input type="password" id="drev-signup-pass2" class="drev-input" placeholder="••••••••" minlength="6" autocomplete="new-password" required />
+            </div>
+            <button type="submit" id="drev-signup-btn" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
+              📧 Send Verification Link to Email
+            </button>
+          </form>
+        `
+            : `
+          <form onsubmit="window.DrevalithPublicUI.submitLogin(event)">
+            <div class="drev-field">
+              <label for="drev-login-email">Registered Email *</label>
+              <input type="email" id="drev-login-email" class="drev-input" placeholder="you@gmail.com" autocomplete="email" required />
+            </div>
+            <div class="drev-field">
+              <label for="drev-login-pass">Password *</label>
+              <input type="password" id="drev-login-pass" class="drev-input" placeholder="••••••••" autocomplete="current-password" required />
+            </div>
+            <button type="submit" id="drev-login-btn" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
+              🔐 Sign In to My Purchases
+            </button>
+            <div style="text-align:right;margin-top:0.75rem;">
+              <button type="button" class="link-subtle-btn" onclick="window.DrevalithPublicUI.forgotPassword()">
+                Forgot Password?
+              </button>
+            </div>
+          </form>
+        `
+        }
+      </div>
+    `;
+  }
+
+  // --------------------------------------------------------------------------
+  // Modals (Private Key, Restore, Sandbox Preview, Unlocked Confirmation)
+  // --------------------------------------------------------------------------
   function ensureModals() {
     if (document.getElementById("drev-key-modal")) return;
 
@@ -312,10 +813,10 @@
       <div class="drev-modal-backdrop" id="drev-key-modal">
         <div class="drev-modal-box">
           <button class="drev-modal-close" type="button" onclick="window.DrevalithPublicUI.closeModals()">✕</button>
-          <span class="section-tag" style="margin-bottom:0.25rem;">Drevalith Games™ // Owner Key Vault</span>
+          <span class="section-tag" style="margin-bottom:0.25rem;">Drevalith Games™ // Key Vault</span>
           <h3 style="font-size:1.35rem;font-weight:900;text-transform:uppercase;margin-bottom:0.35rem;">Redeem Private Key</h3>
           <p id="drev-key-game-label" style="color:var(--text-muted);font-size:0.88rem;margin-bottom:1.15rem;">
-            Enter a valid Studio Owner Private Key to unlock the full .ZIP game download for free ($0.00).
+            Enter a valid Studio Private Key to unlock the full .ZIP game download for free ($0.00).
           </p>
           <div id="drev-key-alert" class="drev-alert"></div>
           <form id="drev-key-form">
@@ -333,13 +834,8 @@
               />
             </div>
             <div class="drev-field">
-              <label for="drev-key-email">Your Name or Email (Optional — For Receipt)</label>
-              <input
-                type="text"
-                id="drev-key-email"
-                class="drev-input"
-                placeholder="player@example.com"
-              />
+              <label for="drev-key-email">Your Name or Email (Optional)</label>
+              <input type="text" id="drev-key-email" class="drev-input" placeholder="player@example.com" />
             </div>
             <button type="submit" id="drev-key-submit" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
               🔑 Verify Key &amp; Unlock Free Download
@@ -348,34 +844,7 @@
         </div>
       </div>
 
-      <!-- RESTORE PREVIOUS PURCHASE MODAL -->
-      <div class="drev-modal-backdrop" id="drev-restore-modal">
-        <div class="drev-modal-box">
-          <button class="drev-modal-close" type="button" onclick="window.DrevalithPublicUI.closeModals()">✕</button>
-          <span class="section-tag" style="margin-bottom:0.25rem;">Drevalith Games™ // Buyer Recovery</span>
-          <h3 style="font-size:1.3rem;font-weight:900;text-transform:uppercase;margin-bottom:0.35rem;">Restore Paid Download</h3>
-          <p style="color:var(--text-muted);font-size:0.87rem;margin-bottom:1.1rem;">
-            Already purchased this game via Razorpay? Enter your Razorpay Payment ID from your receipt to unlock your .ZIP download again.
-          </p>
-          <div id="drev-restore-alert" class="drev-alert"></div>
-          <form id="drev-restore-form">
-            <input type="hidden" id="drev-restore-game-id" />
-            <div class="drev-field">
-              <label for="drev-restore-pid">Razorpay Payment ID *</label>
-              <input type="text" id="drev-restore-pid" class="drev-input" placeholder="pay_XXXXXXXXXXXXXX" required />
-            </div>
-            <div class="drev-field">
-              <label for="drev-restore-email">Buyer Email (Used at Checkout)</label>
-              <input type="email" id="drev-restore-email" class="drev-input" placeholder="you@example.com" />
-            </div>
-            <button type="submit" id="drev-restore-submit" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
-              Verify Receipt &amp; Unlock Download
-            </button>
-          </form>
-        </div>
-      </div>
-
-      <!-- RAZORPAY SANDBOX PREVIEW CHECKOUT (Used ONLY before live RAZORPAY_KEY_ID is set) -->
+      <!-- RAZORPAY SANDBOX PREVIEW CHECKOUT -->
       <div class="drev-modal-backdrop" id="drev-rzp-sandbox-modal">
         <div class="drev-modal-box">
           <div class="rzp-sim-header">
@@ -398,7 +867,7 @@
           </div>
 
           <div class="drev-field">
-            <label for="rzp-sim-email">Buyer Email (For Payment Receipt) *</label>
+            <label for="rzp-sim-email">Buyer Email *</label>
             <input type="email" id="rzp-sim-email" class="drev-input" value="player@drevalithgames.com" required />
           </div>
 
@@ -416,24 +885,27 @@
               ✅ Complete Payment &amp; Unlock .ZIP
             </button>
             <button type="button" id="rzp-sim-fail-btn" class="btn-secondary" style="width:100%;text-align:center;">
-              ✕ Cancel / Simulate Unpaid (Keep Locked)
+              ✕ Cancel
             </button>
           </div>
         </div>
       </div>
 
-      <!-- POST-UNLOCK CELEBRATION / DIRECT DOWNLOAD MODAL -->
+      <!-- POST-UNLOCK DIRECT DOWNLOAD MODAL -->
       <div class="drev-modal-backdrop" id="drev-unlocked-modal">
         <div class="drev-modal-box" style="border-color:rgba(74,222,128,0.55);">
           <button class="drev-modal-close" type="button" onclick="window.DrevalithPublicUI.closeModals()">✕</button>
-          <span class="section-tag" style="color:#4ade80;margin-bottom:0.25rem;">Access Granted // Verified</span>
+          <span class="section-tag" style="color:#4ade80;margin-bottom:0.25rem;">Access Granted // Saved to My Purchases</span>
           <h3 id="drev-unlocked-heading" style="font-size:1.4rem;font-weight:900;text-transform:uppercase;margin-bottom:0.45rem;">
             Game Download Unlocked!
           </h3>
           <p id="drev-unlocked-desc" style="color:var(--text-muted);font-size:0.9rem;margin-bottom:1.25rem;"></p>
-          <a id="drev-unlocked-dl-link" href="#" class="btn-download-unlocked" style="width:100%;justify-content:center;margin-bottom:0.75rem;">
+          <button type="button" id="drev-unlocked-dl-btn" class="btn-download-unlocked" style="width:100%;justify-content:center;margin-bottom:0.65rem;">
             ⬇ Download Game (.ZIP) Now
-          </a>
+          </button>
+          <button type="button" class="btn-secondary" style="width:100%;text-align:center;margin-bottom:0.65rem;" onclick="window.DrevalithPublicUI.closeModals();window.switchPage('account');">
+            🎮 Open My Purchases Library
+          </button>
           <p id="drev-unlocked-receipt" style="font-size:0.77rem;color:var(--text-muted);text-align:center;"></p>
         </div>
       </div>
@@ -442,47 +914,39 @@
     `;
     document.body.appendChild(wrapper);
 
-    // Auto-format Private Key input
     const keyInput = document.getElementById("drev-key-code");
     keyInput.addEventListener("input", () => {
-      const pos = keyInput.selectionStart;
       keyInput.value = Store.formatPrivateKeyInput(keyInput.value);
-      if (pos !== null) {
-        try {
-          keyInput.setSelectionRange(keyInput.value.length, keyInput.value.length);
-        } catch (_) {}
-      }
     });
 
-    // Submit Private Key Form
     document.getElementById("drev-key-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const gameId = document.getElementById("drev-key-game-id").value;
-      const code = document.getElementById("drev-key-code").value;
-      const email = document.getElementById("drev-key-email").value;
+      const privateKey = document.getElementById("drev-key-code").value;
+      const redeemerLabel = document.getElementById("drev-key-email").value.trim();
       const btn = document.getElementById("drev-key-submit");
       const alertBox = document.getElementById("drev-key-alert");
       const game = currentStoreState.games.find((g) => g.id === gameId);
 
       alertBox.className = "drev-alert";
-      alertBox.textContent = "";
       btn.disabled = true;
-      btn.textContent = "Verifying Private Key...";
+      btn.textContent = "Verifying Key...";
 
       try {
         const receipt = await Store.redeemPrivateKey({
           gameId,
-          gameTitle: game ? game.title : "Studio Game",
-          privateKey: code,
-          redeemerLabel: email
+          gameTitle: game ? game.title : "Game",
+          privateKey,
+          redeemerLabel
         });
         closeModals();
         renderPublishedGames();
+        renderAccountAndPurchasesPage();
         openUnlockedModal(
           game,
           receipt,
-          "Private Key Verified — Free Download!",
-          `Your Studio Private Key was verified with $0.00 fees. You can now download ${game ? game.title : "the game"} below.`
+          "Private Key Verified — Free Download Unlocked!",
+          `Your Studio Key unlocked ${game ? game.title : "this game"} at $0.00.`
         );
       } catch (err) {
         alertBox.className = "drev-alert error";
@@ -490,39 +954,6 @@
       } finally {
         btn.disabled = false;
         btn.textContent = "🔑 Verify Key & Unlock Free Download";
-      }
-    });
-
-    // Submit Purchase Restore Form
-    document.getElementById("drev-restore-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const gameId = document.getElementById("drev-restore-game-id").value;
-      const paymentId = document.getElementById("drev-restore-pid").value;
-      const buyerEmail = document.getElementById("drev-restore-email").value;
-      const btn = document.getElementById("drev-restore-submit");
-      const alertBox = document.getElementById("drev-restore-alert");
-      const game = currentStoreState.games.find((g) => g.id === gameId);
-
-      alertBox.className = "drev-alert";
-      btn.disabled = true;
-      btn.textContent = "Checking Payment Receipt...";
-
-      try {
-        const receipt = await Store.restorePurchase({ gameId, paymentId, buyerEmail });
-        closeModals();
-        renderPublishedGames();
-        openUnlockedModal(
-          game,
-          receipt,
-          "Purchase Verified & Restored!",
-          `Verified Razorpay Payment (${receipt.paymentId}). Your .ZIP download is ready.`
-        );
-      } catch (err) {
-        alertBox.className = "drev-alert error";
-        alertBox.textContent = err.message || "Could not verify Payment ID.";
-      } finally {
-        btn.disabled = false;
-        btn.textContent = "Verify Receipt & Unlock Download";
       }
     });
   }
@@ -534,7 +965,7 @@
     t.textContent = msg;
     t.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove("show"), 4500);
+    toastTimer = setTimeout(() => t.classList.remove("show"), 4800);
   }
 
   function closeModals() {
@@ -547,42 +978,59 @@
     document.getElementById("drev-key-code").value = prefillKey
       ? Store.formatPrivateKeyInput(prefillKey)
       : "";
+    if (playerAuthState.user) {
+      document.getElementById("drev-key-email").value = playerAuthState.user.email || "";
+    }
     const alertBox = document.getElementById("drev-key-alert");
     alertBox.className = "drev-alert";
     alertBox.textContent = "";
     if (game) {
       document.getElementById("drev-key-game-label").innerHTML =
-        `Enter an Owner-generated Private Key for <strong>${esc(game.title)}</strong> to unlock free download ($0.00 fee).`;
+        `Enter a Studio Private Key for <strong>${esc(game.title)}</strong> to unlock free download ($0.00).`;
     }
     document.getElementById("drev-key-modal").classList.add("open");
     setTimeout(() => document.getElementById("drev-key-code").focus(), 60);
   }
 
-  function openRestoreModal(gameId) {
-    document.getElementById("drev-restore-game-id").value = gameId;
-    document.getElementById("drev-restore-pid").value = "";
-    const alertBox = document.getElementById("drev-restore-alert");
-    alertBox.className = "drev-alert";
-    alertBox.textContent = "";
-    document.getElementById("drev-restore-modal").classList.add("open");
-  }
-
   function openUnlockedModal(game, receipt, heading, description) {
     document.getElementById("drev-unlocked-heading").textContent = heading;
     document.getElementById("drev-unlocked-desc").textContent = description;
-    const dlLink = document.getElementById("drev-unlocked-dl-link");
-    dlLink.href = receipt.downloadUrl || "#";
-    dlLink.setAttribute("download", (game && game.zipFileName) || "game.zip");
-    dlLink.textContent = `⬇ Download ${game ? game.zipFileName : "Game (.ZIP)"} (${
-      game ? game.zipSizeFormatted : "ZIP"
+    const dlBtn = document.getElementById("drev-unlocked-dl-btn");
+    dlBtn.textContent = `⬇ Download ${game ? game.zipFileName || "Game .ZIP" : "Game (.ZIP)"} (${
+      game ? game.zipSizeFormatted || "ZIP" : "ZIP"
     })`;
+    dlBtn.onclick = () => startStreamingDownload(game ? game.id : receipt.gameId, dlBtn, false);
     document.getElementById("drev-unlocked-receipt").textContent = receipt.paymentId
-      ? `Verified Razorpay Payment ID: ${receipt.paymentId} (Save this ID for future re-downloads)`
-      : `Unlocked via Verified Studio Owner Private Key • $0.00 Charged`;
+      ? `Verified Razorpay Payment ID: ${receipt.paymentId}`
+      : `Unlocked via Verified Studio Private Key • $0.00 Charged`;
     document.getElementById("drev-unlocked-modal").classList.add("open");
   }
 
-  // Handle Dynamic Card Sub-Tabs (Overview / Gameplay / Features)
+  async function startStreamingDownload(gameId, btnEl, isUpdate) {
+    const origHtml = btnEl ? btnEl.innerHTML : "";
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.innerHTML = `<span>⏳ Preparing Download...</span>`;
+    }
+    try {
+      await Store.triggerVerifiedDownload(gameId, (pct) => {
+        if (btnEl) {
+          btnEl.innerHTML = `<span>⬇ Downloading ${isUpdate ? "Update" : "Build"}... ${pct}%</span>`;
+        }
+      });
+      showToast("✅ Download started! Check your browser's Downloads bar.");
+      renderPublishedGames();
+      renderAccountAndPurchasesPage();
+    } catch (err) {
+      showToast(`❌ ${err.message || "Could not start download."}`);
+    } finally {
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.innerHTML = origHtml;
+      }
+    }
+  }
+
   function switchDynamicTab(btnEl, gameId, tabKey) {
     const game = currentStoreState.games.find((g) => g.id === gameId);
     if (!game) return;
@@ -608,55 +1056,63 @@
     }
   }
 
-  // Start Razorpay Payment Flow for a Specific Game
+  // Require Verified Player Account before Paid Checkout so purchases & updates save permanently!
   async function startGamePayment(gameId, triggerBtn) {
     const game = currentStoreState.games.find((g) => g.id === gameId);
     if (!game) return;
 
+    if (Store.isFirebaseConfigured() && !playerAuthState.user) {
+      pendingCheckoutGameId = gameId;
+      showToast("🔐 Please sign in or verify your email first so your purchase & future updates are saved!");
+      window.switchPage("account");
+      return;
+    }
+
     const origLabel = triggerBtn ? triggerBtn.innerHTML : "";
     if (triggerBtn) {
       triggerBtn.disabled = true;
-      triggerBtn.innerHTML = `<span>⏳ Initializing Razorpay Order...</span>`;
+      triggerBtn.innerHTML = `<span>⏳ Opening Razorpay...</span>`;
     }
 
     try {
       const orderData = await Store.createPaymentOrder(game);
 
-      // LIVE / TEST RAZORPAY CHECKOUT.JS FLOW (Both Server Order Mode & GitHub Pages Serverless Mode!)
       if ((orderData.mode === "live_razorpay" || orderData.mode === "live_razorpay_serverless") && orderData.keyId) {
         const Razorpay = await Store.loadRazorpayCheckoutScript();
         const cfg = window.DREVALITH_CONFIG || {};
 
         const rzpOpts = {
           key: orderData.keyId,
-          amount: orderData.amount, // Exact game amount in subunits (cents/paise)
+          amount: orderData.amount,
           currency: orderData.currency,
           name: cfg.STUDIO_NAME || "Drevalith Games™",
           description: `${game.title} — Official Full Game (.ZIP)`,
+          prefill: {
+            email: playerAuthState.user ? playerAuthState.user.email : ""
+          },
           theme: {
             color: cfg.THEME_COLOR || "#f23519"
           },
           handler: async function (response) {
             try {
-              showToast("Verifying payment & unlocking download...");
+              showToast("Verifying payment & saving to My Purchases...");
               const receipt = await Store.verifyRazorpayPayment({
                 gameId: game.id,
                 gameTitle: game.title,
                 amountPaid: game.price,
                 currency: orderData.currency,
+                buyerEmail: playerAuthState.user ? playerAuthState.user.email : "",
                 razorpay_order_id: response.razorpay_order_id || "",
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_signature: response.razorpay_signature || ""
               });
               renderPublishedGames();
+              renderAccountAndPurchasesPage();
               openUnlockedModal(
                 game,
                 receipt,
-                "Payment Successful — Download Unlocked!",
-                `Thank you for supporting Drevalith Games™! Your payment of ${Store.formatCurrency(
-                  game.price,
-                  game.currency
-                )} is verified.`
+                "Payment Successful — Saved to My Purchases!",
+                `Thank you! ${game.title} is now permanently unlocked in your account (including all future game updates).`
               );
             } catch (verifyErr) {
               showToast(`❌ ${verifyErr.message}`);
@@ -664,24 +1120,21 @@
           },
           modal: {
             ondismiss: function () {
-              showToast("Payment cancelled. Download remains locked until payment or key verification.");
+              showToast("Payment cancelled.");
             }
           }
         };
         if (orderData.orderId) rzpOpts.order_id = orderData.orderId;
 
         const rzp = new Razorpay(rzpOpts);
-
         rzp.on("payment.failed", function (resp) {
           const reason = resp?.error?.description || "Payment was declined.";
-          showToast(`❌ Payment failed: ${reason}. Download remains locked.`);
+          showToast(`❌ Payment failed: ${reason}`);
         });
-
         rzp.open();
         return;
       }
 
-      // SANDBOX PREVIEW CHECKOUT SIMULATOR (Before owner pastes live RAZORPAY_KEY_ID)
       openSandboxRazorpayModal(game, orderData);
     } catch (err) {
       showToast(`❌ ${err.message || "Could not start payment"}`);
@@ -700,6 +1153,9 @@
       game.price,
       orderData.currency || game.currency
     );
+    if (playerAuthState.user) {
+      document.getElementById("rzp-sim-email").value = playerAuthState.user.email;
+    }
 
     const payBtn = document.getElementById("rzp-sim-pay-btn");
     const failBtn = document.getElementById("rzp-sim-fail-btn");
@@ -727,11 +1183,12 @@
         });
         closeModals();
         renderPublishedGames();
+        renderAccountAndPurchasesPage();
         openUnlockedModal(
           game,
           receipt,
-          "Payment Successful — Download Unlocked!",
-          `Verified ${Store.formatCurrency(game.price, game.currency)} payment for ${game.title}. Click below to download your game .ZIP file!`
+          "Payment Successful — Saved to My Purchases!",
+          `Verified ${Store.formatCurrency(game.price, game.currency)} payment for ${game.title}. Click below to download!`
         );
       } catch (e) {
         showToast(`❌ ${e.message}`);
@@ -742,7 +1199,7 @@
 
     failBtn.onclick = () => {
       closeModals();
-      showToast("🔒 Payment not completed — Game .ZIP download remains strictly locked.");
+      showToast("🔒 Payment cancelled.");
     };
 
     modal.classList.add("open");
@@ -766,9 +1223,9 @@
 
   function renderPublishedGames() {
     const mount = document.getElementById("live-published-games");
+    updateNavbarAccountLabel();
     if (!mount) return;
 
-    // Toggle default static "VOLT & VITALS Coming Soon" banner only if Owner explicitly toggled it off
     const defaultBanner = document.getElementById("default-upcoming-banner");
     if (defaultBanner) {
       const showDefault =
@@ -786,6 +1243,8 @@
       .map((game) => {
         const isFree = Boolean(game.isFree) || Number(game.price || 0) <= 0;
         const unlock = !isFree ? Store.getUnlockForGame(game.id) : null;
+        const purchaseRec = (playerAuthState.purchases || {})[game.id] || null;
+        const hasUpdate = purchaseRec ? Store.hasGameUpdateAvailable(game, purchaseRec) : false;
         const hasGameplayTab = Boolean(game.gameplayText && game.gameplayText.trim());
         const hasFeaturesTab = Array.isArray(game.featuresList) && game.featuresList.length > 0;
         const showSubtabs = hasGameplayTab || hasFeaturesTab;
@@ -798,44 +1257,46 @@
         let statusStripHtml = "";
 
         if (isFree) {
-          const freeUrl = Store.getFreeGameDownloadUrl(game);
           actionButtonsHtml = `
-            <a href="${esc(freeUrl)}" download="${esc(game.zipFileName || "game.zip")}" class="btn-download-unlocked">
+            <button type="button" class="btn-download-unlocked" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, false)">
               <span>⬇</span>
               <span>Free Download .ZIP (${esc(game.zipSizeFormatted || "ZIP")})</span>
-            </a>
-            <button class="btn-secondary" onclick="switchPage('studio')">Studio Info →</button>
+            </button>
+            <button class="btn-secondary" onclick="window.switchPage('studio')">Studio Info →</button>
           `;
           statusStripHtml = `
             <div class="unlock-status-strip verified">
               <span>✅ <strong>Official Free Release</strong> — Instant .ZIP download unlocked for all players.</span>
             </div>
           `;
-        } else if (unlock && unlock.downloadUrl) {
-          // PAID GAME — VERIFIED & UNLOCKED!
+        } else if (unlock) {
           actionButtonsHtml = `
-            <a href="${esc(unlock.downloadUrl)}" download="${esc(game.zipFileName || "game.zip")}" class="btn-download-unlocked">
+            ${
+              hasUpdate
+                ? `<button type="button" class="btn-download-update" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, true)">
+                     <span>🔄</span>
+                     <span>Download Update (${esc(game.version || "Latest")} .ZIP)</span>
+                   </button>`
+                : ""
+            }
+            <button type="button" class="btn-download-unlocked" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, false)">
               <span>⬇</span>
               <span>Download ${esc(game.zipFileName || "Game .ZIP")} (${esc(game.zipSizeFormatted || "ZIP")})</span>
-            </a>
-            <button class="btn-secondary" onclick="switchPage('studio')">Studio Info →</button>
+            </button>
+            <button class="btn-secondary" onclick="window.switchPage('account')">My Purchases →</button>
           `;
-          const viaLabel =
-            unlock.method === "private_key"
-              ? "Unlocked via Studio Owner Private Key ($0.00)"
-              : `Payment Verified (${esc(unlock.paymentId || "Razorpay")})`;
-          statusStripHtml = `
-            <div class="unlock-status-strip verified">
-              <span>✅ <strong>${viaLabel}</strong> — Full game package ready to download.</span>
-              ${
-                game.installNotes
-                  ? `<span style="font-size:0.78rem;opacity:0.9;">Note: ${esc(game.installNotes)}</span>`
-                  : ""
-              }
-            </div>
-          `;
+          statusStripHtml = hasUpdate
+            ? `
+              <div class="unlock-status-strip update-ready">
+                <span>🔥 <strong>New Update Available (${esc(game.version || "Latest")}):</strong> ${esc(game.updateNotes || "New game update uploaded — download free!")}</span>
+              </div>
+            `
+            : `
+              <div class="unlock-status-strip verified">
+                <span>✅ <strong>Purchased &amp; Unlocked</strong> — Full game package &amp; future updates unlocked in your library.</span>
+              </div>
+            `;
         } else {
-          // PAID GAME — LOCKED UNTIL PAYMENT OR VALID PRIVATE KEY!
           actionButtonsHtml = `
             <button type="button" class="btn-primary" style="border:none;cursor:pointer;" onclick="window.DrevalithPublicUI.pay('${esc(game.id)}', this)">
               💳 Buy &amp; Download — ${esc(priceFormatted)}
@@ -843,20 +1304,28 @@
             <button type="button" class="btn-key-trigger" onclick="window.DrevalithPublicUI.openKey('${esc(game.id)}')">
               🔑 Enter Private Key
             </button>
-            <button type="button" class="btn-disabled" disabled title="Complete Razorpay payment or enter an Owner Private Key to unlock .ZIP download">
+            <button type="button" class="btn-disabled" disabled>
               <span>🔒</span>
               <span>Download .ZIP Locked</span>
             </button>
           `;
           statusStripHtml = `
             <div class="unlock-status-strip">
-              <span>🔒 <strong>Protected Build:</strong> Complete payment (${esc(priceFormatted)}) or redeem an Owner Private Key to unlock the <code>.zip</code> file.</span>
-              <button type="button" class="link-subtle-btn" onclick="window.DrevalithPublicUI.openRestore('${esc(game.id)}')">
-                Already paid? Restore Download
+              <span>🔒 <strong>Protected Build:</strong> Buy once (${esc(priceFormatted)}) to unlock instant download + lifetime game updates in <strong>My Purchases</strong>.</span>
+              <button type="button" class="link-subtle-btn" onclick="window.switchPage('account')">
+                Already bought? Sign In
               </button>
             </div>
           `;
         }
+
+        const coverSrc =
+          game.coverImageUrl &&
+          game.coverImageUrl.startsWith("/") &&
+          window.DREVALITH_CONFIG &&
+          window.DREVALITH_CONFIG.BACKEND_API_URL
+            ? window.DREVALITH_CONFIG.BACKEND_API_URL.replace(/\/+$/, "") + game.coverImageUrl
+            : game.coverImageUrl;
 
         return `
           <div class="release-banner tilt-card" data-game-id="${esc(game.id)}">
@@ -912,7 +1381,7 @@
               <div class="preview-top" style="width:100%;margin-bottom:1.1rem;">
                 <div style="width:100%;border-radius:10px;overflow:hidden;border:1px solid rgba(242,53,25,0.45);box-shadow:0 12px 30px rgba(0,0,0,0.8);margin-bottom:0.75rem;">
                   <img
-                    src="${esc(game.coverImageUrl && game.coverImageUrl.startsWith('/') && window.DREVALITH_CONFIG && window.DREVALITH_CONFIG.BACKEND_API_URL ? window.DREVALITH_CONFIG.BACKEND_API_URL.replace(/\/+$/, '') + game.coverImageUrl : game.coverImageUrl)}"
+                    src="${esc(coverSrc)}"
                     alt="${esc(game.title)} Official Cover"
                     style="width:100%;height:auto;max-height:310px;display:block;object-fit:cover;margin:0;border-radius:0;"
                   />
@@ -926,6 +1395,10 @@
                 <div class="spec-row">
                   <span class="spec-label">Status</span>
                   <span class="spec-val accent">Available for Download</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-label">Version</span>
+                  <span class="spec-val">${esc(game.version || "v1.0.0")}</span>
                 </div>
                 <div class="spec-row">
                   <span class="spec-label">Price</span>
@@ -962,34 +1435,194 @@
     if (!redeemKey) return;
 
     handledUrlRedeem = true;
-    if (typeof window.switchPage === "function") {
-      window.switchPage("games", false);
-    }
+    window.switchPage("games", false);
     const chosen =
       currentStoreState.games.find((g) => g.id === targetGame) || currentStoreState.games[0];
-    if (chosen) {
-      openKeyModal(chosen.id, redeemKey);
-    }
+    if (chosen) openKeyModal(chosen.id, redeemKey);
   }
 
+  // --------------------------------------------------------------------------
+  // Public UI Controller Methods
+  // --------------------------------------------------------------------------
   window.DrevalithPublicUI = {
     pay: startGamePayment,
+    download: startStreamingDownload,
     openKey: openKeyModal,
-    openRestore: openRestoreModal,
     closeModals,
     tab: switchDynamicTab,
     selectSimMethod(chip) {
       document.querySelectorAll(".rzp-method-chip").forEach((c) => c.classList.remove("active"));
       chip.classList.add("active");
+    },
+    switchAuthTab(tab) {
+      activeAuthTab = tab;
+      if (tab !== "verify") {
+        playerAuthState.pendingVerificationEmail = "";
+        stopAutoVerificationPolling();
+      }
+      renderAccountAndPurchasesPage();
+    },
+    async submitSignup(e) {
+      e.preventDefault();
+      const displayName = document.getElementById("drev-signup-name").value.trim();
+      const email = document.getElementById("drev-signup-email").value.trim();
+      const password = document.getElementById("drev-signup-pass").value;
+      const password2 = document.getElementById("drev-signup-pass2").value;
+      const alertEl = document.getElementById("drev-auth-alert");
+      const btn = document.getElementById("drev-signup-btn");
+
+      if (password !== password2) {
+        alertEl.className = "drev-alert error";
+        alertEl.textContent = "Passwords do not match. Please re-enter.";
+        return;
+      }
+
+      alertEl.className = "drev-alert";
+      btn.disabled = true;
+      btn.textContent = "Sending Verification Email...";
+
+      try {
+        const res = await Store.registerPlayerAccount({ displayName, email, password });
+        playerAuthState.pendingVerificationEmail = res.email;
+        activeAuthTab = "verify";
+        renderAccountAndPurchasesPage();
+        showToast(`📧 Verification link sent to ${res.email}!`);
+      } catch (err) {
+        alertEl.className = "drev-alert error";
+        alertEl.textContent = err.message || "Could not create account.";
+        btn.disabled = false;
+        btn.textContent = "📧 Send Verification Link to Email";
+      }
+    },
+    async completeEmailVerify(btn) {
+      const alertEl = document.getElementById("drev-auth-alert");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Checking Email Verification Status...";
+      }
+      try {
+        const res = await Store.checkAndCompletePlayerVerification();
+        if (res && res.verified) {
+          showToast("✅ Email verified! Welcome to Drevalith Games™.");
+          handlePostLoginContinuation();
+        } else if (alertEl) {
+          alertEl.className = "drev-alert error";
+          alertEl.textContent =
+            "Not verified yet! Open the email we sent you (check Spam too), click the verification link inside, then click this button again.";
+        }
+      } catch (err) {
+        if (alertEl) {
+          alertEl.className = "drev-alert error";
+          alertEl.textContent = err.message || "Verification check failed.";
+        }
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "✅ I Clicked the Verification Link — Complete Sign Up";
+        }
+      }
+    },
+    async resendVerify(btn) {
+      if (btn) btn.disabled = true;
+      try {
+        const r = await Store.resendPlayerVerificationLink();
+        if (r && r.verified) {
+          handlePostLoginContinuation();
+          return;
+        }
+        showToast(`📧 Sent a fresh verification link to ${r.email || "your email"}!`);
+      } catch (err) {
+        showToast(`❌ ${err.message}`);
+      } finally {
+        setTimeout(() => {
+          if (btn) btn.disabled = false;
+        }, 15000);
+      }
+    },
+    async submitLogin(e) {
+      e.preventDefault();
+      const email = document.getElementById("drev-login-email").value.trim();
+      const password = document.getElementById("drev-login-pass").value;
+      const alertEl = document.getElementById("drev-auth-alert");
+      const btn = document.getElementById("drev-login-btn");
+
+      alertEl.className = "drev-alert";
+      btn.disabled = true;
+      btn.textContent = "Signing In...";
+
+      try {
+        const res = await Store.loginPlayerAccount({ email, password });
+        if (!res.verified) {
+          playerAuthState.pendingVerificationEmail = res.email;
+          activeAuthTab = "verify";
+          renderAccountAndPurchasesPage();
+          showToast("📩 Please click the verification link sent to your email first!");
+          return;
+        }
+        showToast(`✅ Signed in as ${res.user.email}`);
+        handlePostLoginContinuation();
+      } catch (err) {
+        alertEl.className = "drev-alert error";
+        alertEl.textContent = err.message || "Invalid email or password.";
+        btn.disabled = false;
+        btn.textContent = "🔐 Sign In to My Purchases";
+      }
+    },
+    async forgotPassword() {
+      const emailInput = document.getElementById("drev-login-email");
+      const alertEl = document.getElementById("drev-auth-alert");
+      const email = emailInput ? emailInput.value.trim() : "";
+      if (!email) {
+        if (alertEl) {
+          alertEl.className = "drev-alert error";
+          alertEl.textContent = "Type your email in the Email box above first, then click 'Forgot Password?'.";
+        }
+        return;
+      }
+      try {
+        await Store.sendPlayerPasswordReset(email);
+        if (alertEl) {
+          alertEl.className = "drev-alert success";
+          alertEl.textContent = `📧 Password reset link sent to ${email}! Check your inbox & spam folder.`;
+        }
+      } catch (err) {
+        if (alertEl) {
+          alertEl.className = "drev-alert error";
+          alertEl.textContent = err.message || "Could not send password reset email.";
+        }
+      }
+    },
+    async logoutPlayer() {
+      await Store.logoutPlayerAccount();
+      activeAuthTab = "login";
+      renderAccountAndPurchasesPage();
+      renderPublishedGames();
+      showToast("Signed out of your Drevalith Account.");
     }
   };
 
   window.addEventListener("DOMContentLoaded", () => {
     injectStoreStyles();
+    ensurePlayerAccountPageAndNav();
     ensureModals();
+    renderAccountAndPurchasesPage();
+
+    const hash = window.location.hash.replace("#", "").toLowerCase();
+    if (hash === "account" || hash === "purchases" || hash === "login" || hash === "signup") {
+      if (hash === "signup") activeAuthTab = "signup";
+      window.switchPage("account", false);
+    }
+
+    Store.subscribePlayerAuth((nextAuth) => {
+      playerAuthState = nextAuth;
+      renderPublishedGames();
+      renderAccountAndPurchasesPage();
+    });
+
     Store.subscribePublicStore((nextState) => {
       currentStoreState = nextState;
       renderPublishedGames();
+      renderAccountAndPurchasesPage();
       checkUrlRedeemParams();
     });
   });

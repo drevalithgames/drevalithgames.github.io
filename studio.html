@@ -758,6 +758,7 @@
         <button class="nav-btn " data-target="home" onclick="switchPage('home')">Home</button>
         <button class="nav-btn " data-target="games" onclick="switchPage('games')">Games</button>
         <button class="nav-btn active" data-target="studio" onclick="switchPage('studio')">Studio</button>
+        <button class="nav-btn " id="drev-nav-account-btn" data-target="account" onclick="switchPage('account')">Sign In / Purchases</button>
         <!-- PASTE YOUR ITCH.IO URL BELOW -->
         <a href="https://drevalithgames.itch.io" target="_blank" rel="noopener" class="btn-primary itch-link-btn" style="padding: 0.48rem 1.05rem; font-size: 0.82rem; margin-left: 0.35rem;">itch.io ↗</a>
       </nav>
@@ -942,6 +943,16 @@
         </a>
       </div>
     </div>
+    <!-- ==================== PAGE 4: PLAYER LOGIN, SIGNUP & PURCHASES ==================== -->
+    <div id="page-account" class="page-view ">
+      <div class="drev-account-shell" id="drev-account-mount">
+        <div style="max-width:490px;margin:2rem auto;padding:2rem;border-radius:18px;border:1px solid rgba(242,53,25,0.42);background:rgba(12,16,26,0.95);text-align:center;">
+          <span class="section-tag">Drevalith Player Account</span>
+          <h2 style="font-size:1.55rem;font-weight:900;text-transform:uppercase;margin:0.4rem 0;">Player Sign In &amp; Sign Up</h2>
+          <p style="color:var(--text-muted);font-size:0.9rem;">Loading secure Firebase account &amp; purchases library...</p>
+        </div>
+      </div>
+    </div>
   </main>
 
   <footer>
@@ -956,7 +967,7 @@
     document.querySelectorAll('.itch-link-btn').forEach(el => el.href = ITCH_IO_URL);
 
     // 1. Multi-Page Router with Animated Top Progress Bar & URL Hash Support
-    const pages = ['home', 'games', 'studio'];
+    const pages = ['home', 'games', 'studio', 'account'];
     const bar = document.getElementById('transition-bar');
 
     function switchPage(target, pushHash = true) {
@@ -1125,8 +1136,8 @@
       });
     });
   </script>
-  <script src="js/store-config.js"></script>
-  <script src="js/store-engine.js"></script>
-  <script src="js/public-games.js"></script>
+  <script src="js/store-config.js?v=6"></script>
+  <script src="js/store-engine.js?v=6"></script>
+  <script src="js/public-games.js?v=6"></script>
 </body>
 </html>
