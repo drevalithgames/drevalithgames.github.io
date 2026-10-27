@@ -814,7 +814,10 @@
         <button class="btn-secondary" onclick="switchPage('home')" style="padding: 0.6rem 1.2rem; font-size: 0.8rem;">← Back to Home</button>
       </div>
 
-      <div class="release-banner tilt-card">
+      <!-- REALTIME PUBLISHED GAMES -->
+      <div id="live-published-games"></div>
+
+      <div class="release-banner tilt-card" id="default-upcoming-banner">
         <div>
           <div class="badge" style="margin-bottom: 0.35rem;">
             <span class="badge-dot"></span>
@@ -1122,5 +1125,8 @@
       });
     });
   </script>
+  <script src="js/store-config.js"></script>
+  <script src="js/store-engine.js"></script>
+  <script src="js/public-games.js"></script>
 </body>
 </html>
