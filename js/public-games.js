@@ -30,9 +30,41 @@
 
   let activeAuthTab = "login"; // "login" | "signup" | "verify"
   let pendingCheckoutGameId = "";
+  let pendingKeyGameId = "";
+  let authFormRenderNonce = 0;
   let wasWaitingForEmailVerify = false;
   let editingProfileNameInline = false;
   let verifyCooldownTicker = null;
+
+  function clearAuthFormInputs() {
+    const ids = [
+      "drev-signup-name",
+      "drev-signup-email",
+      "drev-signup-pass",
+      "drev-signup-pass2",
+      "drev-login-email",
+      "drev-login-pass"
+    ];
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.value = "";
+        if (typeof el.setAttribute === "function") el.setAttribute("value", "");
+      }
+    }
+    const formEl = document.getElementById("drev-active-auth-form");
+    if (formEl && typeof formEl.reset === "function") {
+      try { formEl.reset(); } catch (_) {}
+    }
+  }
+
+  function isGameOwnedByUser(gameId) {
+    if (!gameId) return false;
+    const pMap = playerAuthState.purchases || {};
+    if (pMap[gameId]) return true;
+    if (playerAuthState.user && Store.getUnlockForGame(gameId)) return true;
+    return false;
+  }
 
   function esc(str) {
     return String(str ?? "")
@@ -250,34 +282,85 @@
         color: #fff;
         box-shadow: 0 6px 18px rgba(242, 53, 25, 0.38);
       }
+      /* Structured Studio Game Showcase Card */
+      .drev-game-showcase {
+        align-items: stretch;
+      }
+      .drev-game-left {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        min-width: 0;
+      }
+      .drev-game-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.85rem;
+        align-items: center;
+        margin-top: auto;
+        padding-top: 0.75rem;
+      }
+      .drev-cover-frame {
+        width: 100%;
+        aspect-ratio: 16 / 10;
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid rgba(242, 53, 25, 0.38);
+        background: #070a11;
+        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.72);
+        margin-bottom: 1.25rem;
+        position: relative;
+      }
+      .drev-cover-frame img {
+        width: 100%;
+        height: 100%;
+        display: block;
+        object-fit: cover;
+        margin: 0;
+        border-radius: 0;
+        transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .drev-game-showcase:hover .drev-cover-frame img {
+        transform: scale(1.03);
+      }
+      @media (max-width: 900px) {
+        .drev-game-showcase {
+          grid-template-columns: 1fr !important;
+          padding: 1.65rem !important;
+          gap: 1.5rem !important;
+        }
+      }
+
+      /* My Purchases Card */
       .drev-purchase-card {
         display: grid;
-        grid-template-columns: 200px 1fr;
-        gap: 1.5rem;
-        padding: 1.45rem;
+        grid-template-columns: 230px 1fr;
+        gap: 1.6rem;
+        padding: 1.5rem;
         border-radius: 16px;
-        background: linear-gradient(145deg, rgba(17, 22, 35, 0.92), rgba(9, 12, 20, 0.96));
-        border: 1px solid var(--border);
-        margin-bottom: 1.15rem;
+        background: linear-gradient(135deg, rgba(20, 25, 38, 0.92) 0%, rgba(9, 12, 19, 0.97) 100%);
+        border: 1px solid rgba(242, 53, 25, 0.34);
+        margin-bottom: 1.2rem;
         align-items: center;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
       }
       .drev-purchase-card.has-update {
-        border-color: rgba(251, 191, 36, 0.62);
-        box-shadow: 0 12px 38px rgba(234, 88, 12, 0.18);
+        border-color: rgba(251, 191, 36, 0.65);
+        box-shadow: 0 16px 44px rgba(234, 88, 12, 0.2);
       }
       .drev-purchase-cover {
         width: 100%;
-        height: 135px;
+        aspect-ratio: 16 / 10;
+        height: auto;
         object-fit: cover;
-        border-radius: 11px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        display: block;
+        border-radius: 10px;
+        border: 1px solid rgba(242, 53, 25, 0.35);
+        background: #070a11;
       }
       @media (max-width: 720px) {
         .drev-purchase-card {
           grid-template-columns: 1fr;
-        }
-        .drev-purchase-cover {
-          height: 185px;
         }
       }
 
@@ -491,10 +574,17 @@
           if (pushHash) history.replaceState(null, "", "#account");
           if (playerAuthState.user && typeof Store.fetchPlayerProfileFromDb === "function") {
             Store.fetchPlayerProfileFromDb().catch(() => {});
+          } else {
+            authFormRenderNonce += 1;
           }
           renderAccountAndPurchasesPage();
+          if (!playerAuthState.user) {
+            clearAuthFormInputs();
+            setTimeout(clearAuthFormInputs, 0);
+          }
           return;
         }
+        if (!playerAuthState.user) clearAuthFormInputs();
         if (accountPage) accountPage.classList.remove("active");
         if (navBtn) navBtn.classList.remove("active");
         origSwitch(target, pushHash);
@@ -537,8 +627,19 @@
     if (pendingCheckoutGameId) {
       const gid = pendingCheckoutGameId;
       pendingCheckoutGameId = "";
-      window.switchPage("games");
-      setTimeout(() => startGamePayment(gid, null), 200);
+      if (!isGameOwnedByUser(gid)) {
+        window.switchPage("games");
+        setTimeout(() => startGamePayment(gid, null), 200);
+      }
+      return;
+    }
+    if (pendingKeyGameId) {
+      const gid = pendingKeyGameId;
+      pendingKeyGameId = "";
+      if (!isGameOwnedByUser(gid)) {
+        window.switchPage("games");
+        setTimeout(() => openKeyModal(gid, ""), 200);
+      }
     }
   }
 
@@ -565,14 +666,13 @@
 
       const cardsHtml = !purchaseIds.length
         ? `
-          <div style="text-align:center;padding:3rem 1.5rem;border:1px dashed var(--border);border-radius:16px;background:rgba(255,255,255,0.02);">
-            <div style="font-size:2.2rem;margin-bottom:0.65rem;">🎮</div>
-            <h3 style="font-size:1.25rem;font-weight:900;text-transform:uppercase;margin-bottom:0.45rem;">No Purchased Games Yet</h3>
-            <p style="color:var(--text-muted);font-size:0.9rem;max-width:460px;margin:0 auto 1.35rem auto;">
-              Every game you buy (or unlock with a Studio Key) while signed in is permanently saved here — including free access to all future game updates!
+          <div style="text-align:center;padding:2.8rem 1.5rem;border:1px solid var(--border);border-radius:16px;background:rgba(255,255,255,0.02);">
+            <h3 style="font-size:1.2rem;font-weight:900;text-transform:uppercase;margin-bottom:0.45rem;">No Purchased Games</h3>
+            <p style="color:var(--text-muted);font-size:0.9rem;max-width:420px;margin:0 auto 1.3rem auto;">
+              Games you purchase appear here for download and future updates.
             </p>
             <button type="button" class="btn-primary" style="border:none;cursor:pointer;" onclick="window.switchPage('games')">
-              Explore Studio Games →
+              Browse Games →
             </button>
           </div>
         `
@@ -584,12 +684,12 @@
               const cover = (liveGame && liveGame.coverImageUrl) || p.coverImageUrl || "";
               const liveVersion = (liveGame && liveGame.version) || p.purchasedVersion || "v1.0.0";
               const dlVersion = p.lastDownloadedVersion || p.purchasedVersion || "v1.0.0";
-              const sizeLabel = (liveGame && liveGame.zipSizeFormatted) || "ZIP Archive";
+              const sizeLabel = (liveGame && liveGame.zipSizeFormatted) || "ZIP";
               const hasUpdate = liveGame ? Store.hasGameUpdateAvailable(liveGame, p) : false;
               const patchNotes = liveGame && liveGame.updateNotes ? liveGame.updateNotes : "";
               const dateStr = p.purchasedAt
                 ? new Date(p.purchasedAt).toLocaleDateString()
-                : "Verified";
+                : "Owned";
 
               return `
                 <div class="drev-purchase-card ${hasUpdate ? "has-update" : ""}">
@@ -597,37 +697,35 @@
                     ${
                       cover
                         ? `<img src="${esc(cover)}" alt="${esc(title)}" class="drev-purchase-cover" />`
-                        : `<div class="drev-purchase-cover" style="display:flex;align-items:center;justify-content:center;background:#111827;color:var(--text-muted);font-weight:800;">DREVALITH</div>`
+                        : `<div class="drev-purchase-cover" style="display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-weight:800;letter-spacing:0.1em;">DREVALITH</div>`
                     }
                   </div>
                   <div>
                     <div style="display:flex;flex-wrap:wrap;align-items:center;gap:0.55rem;margin-bottom:0.45rem;">
-                      <span class="price-pill-highlight free" style="font-size:0.72rem;padding:0.22rem 0.65rem;">
-                        ✔ Purchased &amp; Owned
+                      <span class="price-pill-highlight free" style="font-size:0.71rem;padding:0.2rem 0.65rem;">
+                        Owned
                       </span>
                       <span style="font-size:0.78rem;color:var(--text-muted);">
-                        Latest Build: <strong style="color:#fff;">${esc(liveVersion)}</strong>
+                        Version: <strong style="color:#fff;">${esc(liveVersion)}</strong>
                       </span>
                       ${
                         hasUpdate
-                          ? `<span style="padding:0.24rem 0.72rem;border-radius:999px;background:rgba(245,158,11,0.22);border:1px solid rgba(251,191,36,0.7);color:#fde68a;font-size:0.73rem;font-weight:900;text-transform:uppercase;letter-spacing:0.06em;">
-                               🔥 New Update Available (${esc(dlVersion)} → ${esc(liveVersion)})
+                          ? `<span style="padding:0.22rem 0.7rem;border-radius:999px;background:rgba(245,158,11,0.2);border:1px solid rgba(251,191,36,0.65);color:#fde68a;font-size:0.72rem;font-weight:900;text-transform:uppercase;letter-spacing:0.06em;">
+                               Update Available (${esc(dlVersion)} → ${esc(liveVersion)})
                              </span>`
-                          : `<span style="font-size:0.76rem;color:#86efac;font-weight:700;">● Up to Date</span>`
+                          : ""
                       }
                     </div>
 
-                    <h3 style="font-size:1.4rem;font-weight:900;text-transform:uppercase;margin-bottom:0.3rem;">${esc(title)}</h3>
-                    <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.75rem;">
-                      Purchased: ${esc(dateStr)}
-                      ${p.paymentId ? ` &nbsp;•&nbsp; Receipt: <code>${esc(p.paymentId)}</code>` : " &nbsp;•&nbsp; Unlocked via Studio Key"}
-                      &nbsp;•&nbsp; Package: <strong>${esc(sizeLabel)}</strong>
+                    <h3 style="font-size:1.45rem;font-weight:900;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.28rem;">${esc(title)}</h3>
+                    <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.85rem;">
+                      Purchased: ${esc(dateStr)} &nbsp;•&nbsp; Size: <strong style="color:#d5dceb;">${esc(sizeLabel)}</strong>
                     </div>
 
                     ${
                       hasUpdate && patchNotes
-                        ? `<div style="margin-bottom:0.9rem;padding:0.7rem 0.95rem;border-radius:9px;background:rgba(245,158,11,0.1);border:1px solid rgba(251,191,36,0.35);font-size:0.83rem;color:#fef3c7;">
-                             <strong>Update Notes (${esc(liveVersion)}):</strong> ${esc(patchNotes)}
+                        ? `<div style="margin-bottom:0.9rem;padding:0.65rem 0.9rem;border-radius:8px;background:rgba(245,158,11,0.1);border:1px solid rgba(251,191,36,0.35);font-size:0.83rem;color:#fef3c7;">
+                             <strong>Update (${esc(liveVersion)}):</strong> ${esc(patchNotes)}
                            </div>`
                         : ""
                     }
@@ -636,14 +734,12 @@
                       ${
                         hasUpdate
                           ? `<button type="button" class="btn-download-update" onclick="window.DrevalithPublicUI.download('${esc(gid)}', this, true)">
-                               <span>🔄</span>
-                               <span>Download Update File (${esc(liveVersion)} .ZIP)</span>
+                               <span>Download Update (${esc(liveVersion)} .ZIP)</span>
                              </button>`
                           : ""
                       }
-                      <button type="button" class="btn-download-unlocked" onclick="window.DrevalithPublicUI.download('${esc(gid)}', this, false)">
-                        <span>⬇</span>
-                        <span>${hasUpdate ? "Download Full Latest Build (.ZIP)" : `Download Game (${esc(liveVersion)} .ZIP)`}</span>
+                      <button type="button" class="btn-primary" style="border:none;cursor:pointer;" onclick="window.DrevalithPublicUI.download('${esc(gid)}', this, false)">
+                        <span>${hasUpdate ? "Download Full Build (.ZIP)" : `Download (${esc(liveVersion)} .ZIP)`}</span>
                       </button>
                     </div>
                   </div>
@@ -658,25 +754,17 @@
       }
 
       mount.innerHTML = `
-        ${
-          dbProf.dbRulesWarning
-            ? `<div class="drev-alert error" style="display:block;margin-bottom:1.1rem;">
-                 ⚠️ <strong>Firebase /users Rules Need 1-Click Publish:</strong> Open your Owner Console → click <strong>"📋 Copy Firebase Rules For My Gmail"</strong> → paste in Firebase Console → Realtime Database → Rules → click <strong>Publish</strong> so player profiles &amp; purchases sync to <code>/users</code>!
-               </div>`
-            : ""
-        }
-        <!-- PLAYER PROFILE CARD (FETCHED DIRECTLY FROM FIREBASE /users/{uid}/profile) -->
         <div style="padding:1.75rem 1.95rem;border-radius:16px;background:linear-gradient(145deg,rgba(18,24,39,0.96),rgba(9,12,20,0.98));border:1px solid rgba(242,53,25,0.45);margin-bottom:2.1rem;box-shadow:0 18px 50px rgba(0,0,0,0.62);">
           <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:1.25rem;">
             <div style="flex:1;min-width:260px;">
-              <span class="section-tag" style="margin-bottom:0.25rem;">Player Profile // Fetched Directly From Firebase Database</span>
+              <span class="section-tag" style="margin-bottom:0.25rem;">Drevalith Games™ // Profile</span>
               <h2 style="font-size:1.8rem;font-weight:900;text-transform:uppercase;margin:0.15rem 0 1rem 0;">
                 👤 ${esc(profileName)}
               </h2>
 
-              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1rem 2rem;padding:1.1rem 1.25rem;border-radius:12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);">
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1rem 2rem;padding:1.1rem 1.25rem;border-radius:12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);">
                 <div>
-                  <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Full Name (From Database)</span>
+                  <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Name</span>
                   ${
                     editingProfileNameInline
                       ? `<form onsubmit="window.DrevalithPublicUI.saveProfileNameInline(event)" style="display:flex;gap:0.45rem;align-items:center;margin-top:0.2rem;">
@@ -686,28 +774,26 @@
                          </form>`
                       : `<div style="display:flex;align-items:center;gap:0.6rem;">
                            <strong style="color:#fff;font-size:1.05rem;">${esc(profileName)}</strong>
-                           <button type="button" class="link-subtle-btn" style="font-size:0.76rem;" onclick="window.DrevalithPublicUI.toggleEditName(true)">✏️ Edit</button>
+                           <button type="button" class="link-subtle-btn" style="font-size:0.76rem;" onclick="window.DrevalithPublicUI.toggleEditName(true)">Edit</button>
                          </div>`
                   }
                 </div>
 
                 <div>
-                  <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Email Address (From Database)</span>
+                  <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Email</span>
                   <strong style="color:#fff;font-size:1.05rem;word-break:break-all;">${esc(profileEmail)}</strong>
                 </div>
 
                 <div>
-                  <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Account &amp; Database Status</span>
+                  <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Account</span>
                   <span style="color:#4ade80;font-weight:800;">✔ Verified</span>
-                  <span style="color:var(--text-muted);font-size:0.82rem;"> • ${
-                    dbProf.fetchedFromDatabase !== false ? "Synced Live (/users)" : "Local Preview"
-                  } • ${esc(joinedDate)}</span>
+                  ${dbProf.createdAt ? `<span style="color:var(--text-muted);font-size:0.82rem;"> • ${esc(joinedDate)}</span>` : ""}
                 </div>
               </div>
             </div>
 
             <div style="display:flex;gap:0.7rem;align-items:center;flex-wrap:wrap;">
-              <button type="button" class="btn-secondary" onclick="window.switchPage('games')">Browse Store</button>
+              <button type="button" class="btn-secondary" onclick="window.switchPage('games')">Browse Games</button>
               <button type="button" class="btn-secondary" style="border-color:rgba(239,68,68,0.45);color:#fca5a5;" onclick="window.DrevalithPublicUI.logoutPlayer()">
                 Sign Out
               </button>
@@ -716,14 +802,14 @@
         </div>
 
         <div style="margin-bottom:1.15rem;">
-          <span class="section-tag">Cloud Purchase Library</span>
-          <h3 style="font-size:1.5rem;font-weight:900;text-transform:uppercase;margin-top:0.15rem;">My Purchased Games &amp; Updates (${purchaseIds.length})</h3>
+          <span class="section-tag">Library</span>
+          <h3 style="font-size:1.5rem;font-weight:900;text-transform:uppercase;margin-top:0.15rem;">My Purchases (${purchaseIds.length})</h3>
         </div>
 
         ${
           updatesCount > 0
             ? `<div class="drev-alert info" style="display:block;margin-bottom:1.35rem;">
-                 🔥 <strong>${updatesCount} Game Update${updatesCount > 1 ? "s" : ""} Ready!</strong> Click <strong>"Download Update File"</strong> below to download the latest updated build for free.
+                 🔥 <strong>${updatesCount} Update${updatesCount > 1 ? "s" : ""} Available:</strong> Click <strong>"Download Update File"</strong> below.
                </div>`
             : ""
         }
@@ -733,7 +819,7 @@
       return;
     }
 
-    // STATE B: LIVE AUTO-VERIFICATION WATCHER (NO "I CLICKED LINK" BUTTON — REDIRECTS AUTOMATICALLY!)
+    // STATE B: EMAIL VERIFICATION VIEW (CLEAN & MINIMAL — SILENT AUTO-ENTRY IN BACKGROUND)
     if (activeAuthTab === "verify" || playerAuthState.pendingVerificationEmail) {
       activeAuthTab = "verify";
       wasWaitingForEmailVerify = true;
@@ -742,28 +828,25 @@
 
       mount.innerHTML = `
         <div class="drev-auth-card" style="text-align:center;">
-          <span class="section-tag">Check Your Email Inbox</span>
+          <span class="section-tag">Email Verification</span>
           <h2 style="font-size:1.55rem;font-weight:900;text-transform:uppercase;margin:0.35rem 0 0.65rem 0;">
-            📧 Verify Your Email Link
+            Check Your Email
           </h2>
           <p style="color:var(--text-muted);font-size:0.91rem;line-height:1.55;margin-bottom:1.15rem;">
             We sent a verification link to <strong style="color:#fff;">${esc(targetEmail)}</strong>.<br/>
-            <span style="font-size:0.82rem;">(Check your <strong>Inbox</strong> AND your <strong>Spam / Promotions</strong> folder for an email from Firebase.)</span>
+            Please check your inbox (or spam folder) and click the link to verify your email.
           </p>
 
-          <div id="drev-auth-alert" class="drev-alert info" style="display:block;text-align:left;">
-            📡 <strong>Auto-Detecting Verification Live...</strong><br/>
-            Open the email and click the verification link inside — the instant your email is verified, this page will <strong>automatically log you into your Account &amp; Profile</strong>!
-          </div>
+          <div id="drev-auth-alert" class="drev-alert"></div>
 
-          <div style="display:flex;justify-content:center;gap:1.25rem;flex-wrap:wrap;margin-top:1.25rem;">
+          <div style="display:flex;justify-content:center;gap:1.25rem;flex-wrap:wrap;margin-top:1.1rem;">
             <button type="button" id="drev-resend-verify-btn" class="link-subtle-btn" ${
               initWaitSec > 0 ? "disabled style='opacity:0.55;cursor:not-allowed;'" : ""
             } onclick="window.DrevalithPublicUI.resendVerify(this)">
-              ${initWaitSec > 0 ? `🔁 Resend Available in ${initWaitSec}s` : "🔁 Resend Verification Email"}
+              ${initWaitSec > 0 ? `Resend Available in ${initWaitSec}s` : "Resend Verification Email"}
             </button>
             <button type="button" class="link-subtle-btn" style="color:var(--text-muted);" onclick="window.DrevalithPublicUI.switchAuthTab('login')">
-              ← Use Another Email / Sign In
+              ← Back to Sign In
             </button>
           </div>
         </div>
@@ -786,9 +869,9 @@
             b.disabled = false;
             b.style.opacity = "1";
             b.style.cursor = "pointer";
-            b.textContent = "🔁 Resend Verification Email";
+            b.textContent = "Resend Verification Email";
           } else {
-            b.textContent = `🔁 Resend Available in ${rem}s`;
+            b.textContent = `Resend Available in ${rem}s`;
           }
         }, 1000);
       }
@@ -800,28 +883,29 @@
       verifyCooldownTicker = null;
     }
 
-    // STATE C: LOGGED OUT -> SIGN IN OR SIGN UP FORM
+    // STATE C: LOGGED OUT -> SIGN IN OR SIGN UP FORM (FRESH BLANK INPUTS ON EVERY SWITCH!)
     const isSignup = activeAuthTab === "signup";
+    const rk = ++authFormRenderNonce;
     mount.innerHTML = `
-      <div class="drev-auth-card">
-        <span class="section-tag">Drevalith Player Account // Cloud Library</span>
+      <div class="drev-auth-card" data-render-key="${rk}">
+        <span class="section-tag">Drevalith Games™ // Account</span>
         <h2 style="font-size:1.6rem;font-weight:900;text-transform:uppercase;margin:0.25rem 0 0.45rem 0;">
-          ${isSignup ? "Create Player Account" : "Player Sign In"}
+          ${isSignup ? "Create Account" : "Sign In"}
         </h2>
         <p style="color:var(--text-muted);font-size:0.87rem;margin-bottom:1.2rem;">
           ${
-            pendingCheckoutGameId
-              ? "Sign in or create your verified account first so your purchase &amp; all future game updates are permanently saved to <strong>My Purchases</strong>!"
-              : "Access your profile, purchased games, and free game updates anytime."
+            pendingCheckoutGameId || pendingKeyGameId
+              ? "Sign in or create an account to continue."
+              : "Access your profile and purchased games."
           }
         </p>
 
         <div class="drev-auth-tabs">
           <button type="button" class="drev-auth-tab ${!isSignup ? "active" : ""}" onclick="window.DrevalithPublicUI.switchAuthTab('login')">
-            🔐 Sign In
+            Sign In
           </button>
           <button type="button" class="drev-auth-tab ${isSignup ? "active" : ""}" onclick="window.DrevalithPublicUI.switchAuthTab('signup')">
-            ✉️ Sign Up
+            Sign Up
           </button>
         </div>
 
@@ -830,40 +914,40 @@
         ${
           isSignup
             ? `
-          <form onsubmit="window.DrevalithPublicUI.submitSignup(event)">
+          <form id="drev-active-auth-form" autocomplete="off" onsubmit="window.DrevalithPublicUI.submitSignup(event)">
             <div class="drev-field">
-              <label for="drev-signup-name">Your Name *</label>
-              <input type="text" id="drev-signup-name" class="drev-input" placeholder="Enter your full name or gamer tag" autocomplete="name" required />
+              <label for="drev-signup-name">Name *</label>
+              <input type="text" id="drev-signup-name" name="drev_sname_${rk}" value="" class="drev-input" placeholder="Enter your name" autocomplete="off" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
             </div>
             <div class="drev-field">
-              <label for="drev-signup-email">Email Address *</label>
-              <input type="email" id="drev-signup-email" class="drev-input" placeholder="you@gmail.com" autocomplete="email" required />
+              <label for="drev-signup-email">Email *</label>
+              <input type="email" id="drev-signup-email" name="drev_semail_${rk}" value="" class="drev-input" placeholder="you@example.com" autocomplete="off" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
             </div>
             <div class="drev-field">
-              <label for="drev-signup-pass">Create Password (Min 6 Characters) *</label>
-              <input type="password" id="drev-signup-pass" class="drev-input" placeholder="••••••••" minlength="6" autocomplete="new-password" required />
+              <label for="drev-signup-pass">Password (Min 6 Characters) *</label>
+              <input type="password" id="drev-signup-pass" name="drev_spass_${rk}" value="" class="drev-input" placeholder="••••••••" minlength="6" autocomplete="new-password" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
             </div>
             <div class="drev-field">
               <label for="drev-signup-pass2">Confirm Password *</label>
-              <input type="password" id="drev-signup-pass2" class="drev-input" placeholder="••••••••" minlength="6" autocomplete="new-password" required />
+              <input type="password" id="drev-signup-pass2" name="drev_spass2_${rk}" value="" class="drev-input" placeholder="••••••••" minlength="6" autocomplete="new-password" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
             </div>
             <button type="submit" id="drev-signup-btn" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
-              📧 Sign Up &amp; Send Verification Email
+              Sign Up
             </button>
           </form>
         `
             : `
-          <form onsubmit="window.DrevalithPublicUI.submitLogin(event)">
+          <form id="drev-active-auth-form" autocomplete="off" onsubmit="window.DrevalithPublicUI.submitLogin(event)">
             <div class="drev-field">
-              <label for="drev-login-email">Registered Email *</label>
-              <input type="email" id="drev-login-email" class="drev-input" placeholder="you@gmail.com" autocomplete="email" required />
+              <label for="drev-login-email">Email *</label>
+              <input type="email" id="drev-login-email" name="drev_lemail_${rk}" value="" class="drev-input" placeholder="you@example.com" autocomplete="off" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
             </div>
             <div class="drev-field">
               <label for="drev-login-pass">Password *</label>
-              <input type="password" id="drev-login-pass" class="drev-input" placeholder="••••••••" autocomplete="current-password" required />
+              <input type="password" id="drev-login-pass" name="drev_lpass_${rk}" value="" class="drev-input" placeholder="••••••••" autocomplete="new-password" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
             </div>
             <button type="submit" id="drev-login-btn" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
-              🔐 Sign In to Account
+              Sign In
             </button>
             <div style="text-align:right;margin-top:0.75rem;">
               <button type="button" class="link-subtle-btn" onclick="window.DrevalithPublicUI.forgotPassword()">
@@ -875,6 +959,8 @@
         }
       </div>
     `;
+    clearAuthFormInputs();
+    setTimeout(clearAuthFormInputs, 0);
   }
 
   // --------------------------------------------------------------------------
@@ -936,10 +1022,6 @@
               <div id="rzp-sim-amount" style="font-size:1.35rem;font-weight:900;color:#fff;">$0.00</div>
               <div style="font-size:0.7rem;opacity:0.85;">Exact Game Amount</div>
             </div>
-          </div>
-
-          <div style="padding:0.62rem 0.85rem;border-radius:8px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-size:0.78rem;margin-bottom:1rem;">
-            <strong>Sandbox Test Mode Active:</strong> Paste your free <code>rzp_test_...</code> or <code>rzp_live_...</code> key in <code>js/store-config.js</code> to switch automatically to live Razorpay Gateway.
           </div>
 
           <div class="drev-field">
@@ -1049,6 +1131,12 @@
   }
 
   function openKeyModal(gameId, prefillKey = "") {
+    if (Store.isFirebaseConfigured() && !playerAuthState.user) {
+      pendingKeyGameId = gameId;
+      showToast("Please sign in first to redeem your key into My Purchases.");
+      window.switchPage("account");
+      return;
+    }
     const game = currentStoreState.games.find((g) => g.id === gameId);
     document.getElementById("drev-key-game-id").value = gameId;
     document.getElementById("drev-key-code").value = prefillKey
@@ -1069,6 +1157,7 @@
   }
 
   function openUnlockedModal(game, receipt, heading, description) {
+    window.switchPage("account");
     document.getElementById("drev-unlocked-heading").textContent = heading;
     document.getElementById("drev-unlocked-desc").textContent = description;
     const dlBtn = document.getElementById("drev-unlocked-dl-btn");
@@ -1139,7 +1228,7 @@
 
     if (Store.isFirebaseConfigured() && !playerAuthState.user) {
       pendingCheckoutGameId = gameId;
-      showToast("🔐 Please sign in or verify your email first so your purchase & future updates are saved!");
+      showToast("Please sign in first to purchase this game.");
       window.switchPage("account");
       return;
     }
@@ -1307,21 +1396,13 @@
       defaultBanner.remove();
     }
 
-    const games = currentStoreState.games || [];
+    // Show ONLY unpurchased / new / free / coming-soon games on Games page.
+    // Purchased games are displayed exclusively in My Purchases (#page-account).
+    const allGames = currentStoreState.games || [];
+    const games = allGames.filter((g) => !isGameOwnedByUser(g.id));
+
     if (!games.length) {
-      mount.innerHTML = `
-        <div class="release-banner tilt-card" style="display:block;text-align:center;padding:2.5rem 2rem;">
-          <div class="badge" style="margin:0 auto 0.85rem auto;display:inline-flex;">
-            <span class="badge-dot"></span>
-            <span>Official Studio Catalog</span>
-          </div>
-          <h3 class="game-title" style="font-size:1.55rem;margin-bottom:0.5rem;">New Studio Releases Arriving Soon</h3>
-          <p style="color:var(--text-muted);font-size:0.92rem;max-width:560px;margin:0 auto;">
-            Official Paid, Free, and Coming Soon titles published from the Drevalith Games™ Console appear here automatically in real time.
-          </p>
-        </div>
-      `;
-      attachTiltToDynamicCards(mount);
+      mount.innerHTML = "";
       return;
     }
 
@@ -1330,10 +1411,9 @@
         try {
           const isComingSoon = Boolean(game.isComingSoon || game.releaseStatus === "coming_soon");
           const isFree = !isComingSoon && (Boolean(game.isFree) || Number(game.price || 0) <= 0);
-          const comingSoonLabel = String(game.comingSoonLabel || game.releaseDate || "To Be Announced").trim() || "To Be Announced";
-          const unlock = !isComingSoon && !isFree ? Store.getUnlockForGame(game.id) : null;
-          const purchaseRec = (playerAuthState.purchases || {})[game.id] || null;
-          const hasUpdate = !isComingSoon && purchaseRec ? Store.hasGameUpdateAvailable(game, purchaseRec) : false;
+          const comingSoonLabel =
+            String(game.comingSoonLabel || game.releaseDate || "To Be Announced").trim() ||
+            "To Be Announced";
           const hasGameplayTab = Boolean(game.gameplayText && game.gameplayText.trim());
           const hasFeaturesTab = Array.isArray(game.featuresList) && game.featuresList.length > 0;
           const showSubtabs = hasGameplayTab || hasFeaturesTab;
@@ -1341,85 +1421,30 @@
           const priceFormatted = isComingSoon
             ? "COMING SOON"
             : isFree
-            ? "FREE DOWNLOAD"
+            ? "FREE"
             : Store.formatCurrency(game.price, game.currency);
 
           let actionButtonsHtml = "";
-          let statusStripHtml = "";
-
           if (isComingSoon) {
             actionButtonsHtml = `
-              <button type="button" class="btn-disabled" disabled>
-                <span>⏳</span>
-                <span>Coming Soon</span>
-              </button>
-              <button class="btn-secondary" onclick="window.switchPage('studio')">Studio Info →</button>
-            `;
-            statusStripHtml = `
-              <div class="unlock-status-strip" style="background:rgba(245,158,11,0.12);border-color:rgba(251,191,36,0.45);color:#fde68a;">
-                <span>⏳ <strong>Coming Soon (${esc(comingSoonLabel)}):</strong> Currently in active studio development — official store checkout &amp; download unlock at launch.</span>
-              </div>
+              <button type="button" class="btn-disabled" disabled>Coming Soon</button>
+              <button type="button" class="btn-secondary" onclick="window.switchPage('studio')">Studio Info →</button>
             `;
           } else if (isFree) {
             actionButtonsHtml = `
-              <button type="button" class="btn-download-unlocked" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, false)">
-                <span>⬇</span>
-                <span>Free Download .ZIP (${esc(game.zipSizeFormatted || "ZIP")})</span>
+              <button type="button" class="btn-primary" style="border:none;cursor:pointer;" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, false)">
+                Download Free (.ZIP)
               </button>
-              <button class="btn-secondary" onclick="window.switchPage('studio')">Studio Info →</button>
+              <button type="button" class="btn-secondary" onclick="window.switchPage('studio')">Studio Info →</button>
             `;
-            statusStripHtml = `
-              <div class="unlock-status-strip verified">
-                <span>✅ <strong>Official Free Release</strong> — Instant .ZIP download unlocked for all players.</span>
-              </div>
-            `;
-          } else if (unlock) {
-            actionButtonsHtml = `
-              ${
-                hasUpdate
-                  ? `<button type="button" class="btn-download-update" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, true)">
-                       <span>🔄</span>
-                       <span>Download Update (${esc(game.version || "Latest")} .ZIP)</span>
-                     </button>`
-                  : ""
-              }
-              <button type="button" class="btn-download-unlocked" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, false)">
-                <span>⬇</span>
-                <span>Download ${esc(game.zipFileName || "Game .ZIP")} (${esc(game.zipSizeFormatted || "ZIP")})</span>
-              </button>
-              <button class="btn-secondary" onclick="window.switchPage('account')">My Purchases →</button>
-            `;
-            statusStripHtml = hasUpdate
-              ? `
-                <div class="unlock-status-strip update-ready">
-                  <span>🔥 <strong>New Update Available (${esc(game.version || "Latest")}):</strong> ${esc(game.updateNotes || "New game update uploaded — download free!")}</span>
-                </div>
-              `
-              : `
-                <div class="unlock-status-strip verified">
-                  <span>✅ <strong>Purchased &amp; Unlocked</strong> — Full game package &amp; future updates unlocked in your library.</span>
-                </div>
-              `;
           } else {
             actionButtonsHtml = `
               <button type="button" class="btn-primary" style="border:none;cursor:pointer;" onclick="window.DrevalithPublicUI.pay('${esc(game.id)}', this)">
-                💳 Buy &amp; Download — ${esc(priceFormatted)}
+                Buy Now — ${esc(priceFormatted)}
               </button>
-              <button type="button" class="btn-key-trigger" onclick="window.DrevalithPublicUI.openKey('${esc(game.id)}')">
-                🔑 Enter Private Key
+              <button type="button" class="btn-secondary" onclick="window.DrevalithPublicUI.openKey('${esc(game.id)}')">
+                Redeem Key
               </button>
-              <button type="button" class="btn-disabled" disabled>
-                <span>🔒</span>
-                <span>Download .ZIP Locked</span>
-              </button>
-            `;
-            statusStripHtml = `
-              <div class="unlock-status-strip">
-                <span>🔒 <strong>Protected Build:</strong> Buy once (${esc(priceFormatted)}) to unlock instant download + lifetime game updates in <strong>My Purchases</strong>.</span>
-                <button type="button" class="link-subtle-btn" onclick="window.switchPage('account')">
-                  Already bought? Sign In
-                </button>
-              </div>
             `;
           }
 
@@ -1434,97 +1459,95 @@
           const pillClass = isComingSoon ? "coming-soon" : isFree ? "free" : "";
           const badgeLabel = isComingSoon
             ? game.badgeText || "Upcoming Release"
+            : isFree
+            ? game.badgeText || "Free Official Release"
             : game.badgeText || "Official Studio Release";
 
           return `
-            <div class="release-banner tilt-card" data-game-id="${esc(game.id)}">
-              <div>
-                <div style="display:flex;flex-wrap:wrap;align-items:center;gap:0.6rem;margin-bottom:0.45rem;">
-                  <div class="badge" style="margin-bottom:0;">
-                    <span class="badge-dot"></span>
-                    <span>${esc(badgeLabel)}</span>
+            <div class="release-banner tilt-card drev-game-showcase" data-game-id="${esc(game.id)}">
+              <div class="drev-game-left">
+                <div>
+                  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:0.65rem;margin-bottom:0.55rem;">
+                    <div class="badge" style="margin-bottom:0;">
+                      <span class="badge-dot"></span>
+                      <span>${esc(badgeLabel)}</span>
+                    </div>
+                    <span class="price-pill-highlight ${pillClass}">
+                      ${esc(priceFormatted)}
+                    </span>
                   </div>
-                  <span class="price-pill-highlight ${pillClass}">
-                    ${isComingSoon ? `⏳ ${esc(priceFormatted)}` : esc(priceFormatted)}
-                  </span>
-                </div>
 
-                <h3 class="game-title">${esc(game.title)}</h3>
-                <div class="game-subtitle">
-                  ${esc(game.subtitle || game.modes || "Windows PC")}
-                  ${!isComingSoon && game.version ? `&nbsp;•&nbsp; ${esc(game.version)}` : ""}
-                </div>
-
-                ${
-                  showSubtabs
-                    ? `
-                  <div class="game-subtabs">
-                    <button class="subtab-btn active" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'overview')">Overview</button>
-                    ${
-                      hasGameplayTab
-                        ? `<button class="subtab-btn" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'gameplay')">Gameplay &amp; Survival</button>`
-                        : ""
-                    }
-                    ${
-                      hasFeaturesTab
-                        ? `<button class="subtab-btn" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'features')">Key Features</button>`
-                        : ""
+                  <h3 class="game-title">${esc(game.title)}</h3>
+                  <div class="game-subtitle">
+                    ${esc(game.subtitle || game.modes || game.platform || "Windows PC")}${
+                      !isComingSoon && game.version ? ` &nbsp;•&nbsp; ${esc(game.version)}` : ""
                     }
                   </div>
-                `
-                    : ""
-                }
 
-                <div id="dyn-tab-box-${esc(game.id)}" class="subtab-content" style="min-height:auto;">
-                  ${formatParagraphs(game.description)}
+                  ${
+                    showSubtabs
+                      ? `
+                    <div class="game-subtabs">
+                      <button class="subtab-btn active" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'overview')">Overview</button>
+                      ${
+                        hasGameplayTab
+                          ? `<button class="subtab-btn" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'gameplay')">Gameplay</button>`
+                          : ""
+                      }
+                      ${
+                        hasFeaturesTab
+                          ? `<button class="subtab-btn" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'features')">Key Features</button>`
+                          : ""
+                      }
+                    </div>
+                  `
+                      : ""
+                  }
+
+                  <div id="dyn-tab-box-${esc(game.id)}" class="subtab-content" style="min-height:110px;">
+                    ${formatParagraphs(game.description)}
+                  </div>
                 </div>
 
-                <div style="display:flex;flex-wrap:wrap;gap:0.85rem;align-items:center;">
+                <div class="drev-game-actions">
                   ${actionButtonsHtml}
                 </div>
-
-                ${statusStripHtml}
               </div>
 
               <div class="release-preview">
-                <div class="preview-top" style="width:100%;margin-bottom:1.1rem;">
+                <div>
                   ${
                     coverSrc
-                      ? `<div style="width:100%;border-radius:10px;overflow:hidden;border:1px solid rgba(242,53,25,0.45);box-shadow:0 12px 30px rgba(0,0,0,0.8);margin-bottom:0.75rem;">
-                          <img
-                            src="${esc(coverSrc)}"
-                            alt="${esc(game.title)} Official Cover"
-                            style="width:100%;height:auto;max-height:310px;display:block;object-fit:cover;margin:0;border-radius:0;"
-                          />
-                        </div>`
-                      : ""
+                      ? `<div class="drev-cover-frame">
+                           <img src="${esc(coverSrc)}" alt="${esc(game.title)}" loading="lazy" />
+                         </div>`
+                      : `<div class="drev-cover-frame" style="display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-weight:800;letter-spacing:0.12em;">
+                           DREVALITH GAMES™
+                         </div>`
                   }
-                  <div style="color:var(--accent);font-size:0.75rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;">
-                    Official Game Cover • Drevalith Games™
-                  </div>
                 </div>
 
                 <div class="specs-box">
                   <div class="spec-row">
                     <span class="spec-label">Status</span>
                     <span class="spec-val accent">${
-                      isComingSoon ? "In Development" : "Available for Download"
+                      isComingSoon ? "Coming Soon" : isFree ? "Free Release" : "Available Now"
                     }</span>
+                  </div>
+                  <div class="spec-row">
+                    <span class="spec-label">Platform</span>
+                    <span class="spec-val">${esc(game.platform || "Windows PC")}</span>
                   </div>
                   ${
                     isComingSoon
                       ? `
                       <div class="spec-row">
+                        <span class="spec-label">Modes</span>
+                        <span class="spec-val">${esc(game.modes || game.subtitle || "Singleplayer / Co-op")}</span>
+                      </div>
+                      <div class="spec-row">
                         <span class="spec-label">Release Date</span>
                         <span class="spec-val">${esc(comingSoonLabel)}</span>
-                      </div>
-                      <div class="spec-row">
-                        <span class="spec-label">Platform</span>
-                        <span class="spec-val">${esc(game.platform || "Windows PC")}</span>
-                      </div>
-                      <div class="spec-row">
-                        <span class="spec-label">Modes</span>
-                        <span class="spec-val">${esc(game.modes || "Singleplayer / Co-op")}</span>
                       </div>
                       `
                       : `
@@ -1534,18 +1557,10 @@
                       </div>
                       <div class="spec-row">
                         <span class="spec-label">Price</span>
-                        <span class="spec-val">${esc(priceFormatted)}</span>
+                        <span class="spec-val">${esc(isFree ? "Free" : priceFormatted)}</span>
                       </div>
                       <div class="spec-row">
-                        <span class="spec-label">Platform</span>
-                        <span class="spec-val">${esc(game.platform || "Windows PC")}</span>
-                      </div>
-                      <div class="spec-row">
-                        <span class="spec-label">Release Date</span>
-                        <span class="spec-val">${esc(game.releaseDate || "Available Now")}</span>
-                      </div>
-                      <div class="spec-row">
-                        <span class="spec-label">Download Package</span>
+                        <span class="spec-label">Package</span>
                         <span class="spec-val">.ZIP (${esc(game.zipSizeFormatted || "Archive")})</span>
                       </div>
                       `
@@ -1593,12 +1608,16 @@
       chip.classList.add("active");
     },
     switchAuthTab(tab) {
+      clearAuthFormInputs();
       activeAuthTab = tab;
       if (tab !== "verify") {
         playerAuthState.pendingVerificationEmail = "";
         wasWaitingForEmailVerify = false;
       }
       renderAccountAndPurchasesPage();
+      clearAuthFormInputs();
+      setTimeout(clearAuthFormInputs, 0);
+      setTimeout(clearAuthFormInputs, 40);
     },
     async submitSignup(e) {
       e.preventDefault();
@@ -1631,6 +1650,7 @@
           handlePostLoginContinuation();
           return;
         }
+        clearAuthFormInputs();
         playerAuthState.pendingVerificationEmail = res.email;
         wasWaitingForEmailVerify = true;
         activeAuthTab = "verify";
@@ -1644,7 +1664,7 @@
         alertEl.className = "drev-alert error";
         alertEl.textContent = err.message || "Could not create account.";
         btn.disabled = false;
-        btn.textContent = "📧 Sign Up & Send Verification Email";
+        btn.textContent = "Sign Up";
       }
     },
     async resendVerify(btn) {
@@ -1659,15 +1679,15 @@
         }
         if (alertEl) {
           alertEl.className = "drev-alert success";
-          alertEl.textContent = `📧 Fresh verification email sent to ${r.email || "your inbox"}! Click the link inside — your account will open automatically.`;
+          alertEl.textContent = `Verification email sent to ${r.email || "your inbox"}.`;
         }
-        showToast(`📧 Sent verification link to ${r.email || "your email"}!`);
+        showToast(`Verification link sent to ${r.email || "your email"}.`);
       } catch (err) {
         if (alertEl) {
           alertEl.className = "drev-alert error";
           alertEl.textContent = err.message || "Please wait 60 seconds before requesting another email.";
         }
-        showToast(`⏳ ${err.message}`);
+        showToast(`${err.message}`);
       } finally {
         setTimeout(() => {
           if (btn) btn.disabled = false;
@@ -1693,7 +1713,7 @@
         await Store.updatePlayerProfileName(nextName);
         editingProfileNameInline = false;
         renderAccountAndPurchasesPage();
-        showToast("✅ Name saved & fetched directly from Firebase Database!");
+        showToast("✅ Name updated.");
       } catch (err) {
         showToast(`❌ ${err.message || "Could not update profile name."}`);
       }
@@ -1716,17 +1736,18 @@
           wasWaitingForEmailVerify = true;
           activeAuthTab = "verify";
           renderAccountAndPurchasesPage();
-          showToast("📩 Click the verification link in your email — your account will open automatically!");
+          showToast("Please verify your email via the link sent to your inbox.");
           return;
         }
+        clearAuthFormInputs();
         wasWaitingForEmailVerify = false;
-        showToast(`✅ Signed in as ${(res.dbProfile && res.dbProfile.name) || res.user.email}`);
+        showToast(`Signed in as ${(res.dbProfile && res.dbProfile.name) || res.user.email}`);
         handlePostLoginContinuation();
       } catch (err) {
         alertEl.className = "drev-alert error";
         alertEl.textContent = err.message || "Invalid email or password.";
         btn.disabled = false;
-        btn.textContent = "🔐 Sign In to Account";
+        btn.textContent = "Sign In";
       }
     },
     async forgotPassword() {
@@ -1754,12 +1775,14 @@
       }
     },
     async logoutPlayer() {
+      clearAuthFormInputs();
       await Store.logoutPlayerAccount();
       wasWaitingForEmailVerify = false;
       activeAuthTab = "login";
       renderAccountAndPurchasesPage();
+      clearAuthFormInputs();
       renderPublishedGames();
-      showToast("Signed out of your Drevalith Account.");
+      showToast("Signed out.");
     }
   };
 

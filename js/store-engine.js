@@ -200,19 +200,53 @@
 
   function saveUnlockReceipt(gameId, receipt) {
     const map = getSavedUnlocks();
+    const uid = currentVerifiedPlayer ? currentVerifiedPlayer.uid : "";
+    const nowTs = Date.now();
     map[gameId] = {
       ...receipt,
-      unlockedAt: receipt.unlockedAt || Date.now(),
-      expiresAt: Date.now() + (receipt.expiresInMinutes || 10080) * 60 * 1000
+      uid,
+      unlockedAt: receipt.unlockedAt || nowTs,
+      expiresAt: nowTs + (receipt.expiresInMinutes || 10080) * 60 * 1000
     };
     try {
       localStorage.setItem(UNLOCK_RECEIPTS_KEY, JSON.stringify(map));
     } catch (_) {}
+
+    if (currentVerifiedPlayer) {
+      const gObj = latestPublicGamesCache.find((g) => g.id === gameId) || {};
+      currentPlayerPurchases = {
+        ...currentPlayerPurchases,
+        [gameId]: {
+          gameId,
+          gameTitle: gObj.title || receipt.gameTitle || "Drevalith Game",
+          coverImageUrl: gObj.coverImageUrl || "",
+          unlockMethod: receipt.method || "razorpay",
+          paymentId: receipt.paymentId || "",
+          amount: Number(gObj.price || 0),
+          currency: gObj.currency || "USD",
+          purchasedAt: receipt.unlockedAt || nowTs,
+          purchasedVersion: gObj.version || "v1.0.0",
+          lastDownloadedVersion: gObj.version || "v1.0.0",
+          lastDownloadedBuildUpdatedAt: Number(gObj.buildUpdatedAt || gObj.updatedAt || nowTs),
+          downloadRef: receipt.rawDownloadRef || ""
+        }
+      };
+      emitAuthState();
+    }
   }
 
   function getUnlockForGame(gameId) {
-    if (currentVerifiedPlayer && currentPlayerPurchases && currentPlayerPurchases[gameId]) {
-      return currentPlayerPurchases[gameId];
+    if (isFirebaseConfigured()) {
+      if (!currentVerifiedPlayer) return null;
+      if (currentPlayerPurchases && currentPlayerPurchases[gameId]) {
+        return currentPlayerPurchases[gameId];
+      }
+      const map = getSavedUnlocks();
+      const rec = map[gameId];
+      if (rec && (!rec.uid || rec.uid === currentVerifiedPlayer.uid)) {
+        return rec;
+      }
+      return null;
     }
     const map = getSavedUnlocks();
     return map[gameId] || null;
@@ -342,7 +376,7 @@
         markVerificationSentNow(email);
         if (forceManualResend) {
           throw new Error(
-            "Firebase already sent a verification link to your email recently! Please check your Inbox and Spam/Junk folder — as soon as you click that link, your account will open automatically."
+            "A verification link was already sent recently. Please check your inbox and spam folder."
           );
         }
         return { sent: false, alreadySentRecently: true, rateLimitedGracefully: true, waitSec: 90 };
@@ -574,42 +608,56 @@
       emitAuthState();
       return;
     }
-    const { rtdb, dbMod } = await getPublicRealtimeDb();
+
+    let freshToken = "";
+    try {
+      freshToken = await user.getIdToken();
+      const restPurchases = await rtdbRestJson("GET", `users/${user.uid}/purchases`, undefined, freshToken);
+      if (restPurchases && typeof restPurchases === "object") {
+        currentPlayerPurchases = restPurchases;
+      }
+    } catch (_) {}
 
     const localMap = getSavedUnlocks();
     for (const gid of Object.keys(localMap)) {
       const rec = localMap[gid];
-      const gObj = latestPublicGamesCache.find((x) => x.id === gid) || {};
-      const pRef = dbMod.ref(rtdb, `users/${user.uid}/purchases/${gid}`);
-      const snap = await dbMod.get(pRef).catch(() => null);
-      if (snap && !snap.exists()) {
-        await dbMod
-          .set(pRef, {
-            gameId: gid,
-            gameTitle: gObj.title || rec.gameTitle || "Studio Game",
-            unlockMethod: rec.method || "razorpay",
-            paymentId: rec.paymentId || "",
-            amount: Number(gObj.price || 0),
-            currency: gObj.currency || "USD",
-            purchasedAt: rec.unlockedAt || Date.now(),
-            purchasedVersion: gObj.version || "v1.0.0",
-            lastDownloadedVersion: gObj.version || "v1.0.0",
-            lastDownloadedBuildUpdatedAt: Number(gObj.buildUpdatedAt || gObj.updatedAt || Date.now()),
-            downloadRef: rec.rawDownloadRef || ""
-          })
-          .catch(() => {});
+      if (rec.uid && rec.uid !== user.uid) continue;
+      if (!currentPlayerPurchases[gid]) {
+        const gObj = latestPublicGamesCache.find((x) => x.id === gid) || {};
+        const pEntry = {
+          gameId: gid,
+          gameTitle: gObj.title || rec.gameTitle || "Studio Game",
+          coverImageUrl: gObj.coverImageUrl || "",
+          unlockMethod: rec.method || "razorpay",
+          paymentId: rec.paymentId || "",
+          amount: Number(gObj.price || 0),
+          currency: gObj.currency || "USD",
+          purchasedAt: rec.unlockedAt || Date.now(),
+          purchasedVersion: gObj.version || "v1.0.0",
+          lastDownloadedVersion: gObj.version || "v1.0.0",
+          lastDownloadedBuildUpdatedAt: Number(gObj.buildUpdatedAt || gObj.updatedAt || Date.now()),
+          downloadRef: rec.rawDownloadRef || ""
+        };
+        currentPlayerPurchases[gid] = pEntry;
+        if (freshToken) {
+          await rtdbRestJson("PUT", `users/${user.uid}/purchases/${gid}`, pEntry, freshToken).catch(() => {});
+        }
       }
     }
+    emitAuthState();
 
-    const listRef = dbMod.ref(rtdb, `users/${user.uid}/purchases`);
-    unsubPurchasesRef = dbMod.onValue(
-      listRef,
-      (snap) => {
-        currentPlayerPurchases = snap.exists() ? snap.val() || {} : {};
-        emitAuthState();
-      },
-      () => emitAuthState()
-    );
+    try {
+      const { rtdb, dbMod } = await getPublicRealtimeDb();
+      const listRef = dbMod.ref(rtdb, `users/${user.uid}/purchases`);
+      unsubPurchasesRef = dbMod.onValue(
+        listRef,
+        (snap) => {
+          currentPlayerPurchases = snap.exists() ? snap.val() || {} : {};
+          emitAuthState();
+        },
+        () => emitAuthState()
+      );
+    } catch (_) {}
   }
 
   async function activateVerifiedPlayerSession(user, explicitName) {
@@ -873,6 +921,9 @@
       const { auth, authMod } = await getFirebasePublicServices();
       await authMod.signOut(auth).catch(() => {});
     }
+    try {
+      localStorage.removeItem(UNLOCK_RECEIPTS_KEY);
+    } catch (_) {}
     currentVerifiedPlayer = null;
     currentDbProfile = null;
     pendingVerificationEmail = "";
@@ -883,12 +934,11 @@
   async function savePurchaseToVerifiedAccount(gameId, receiptData) {
     if (!currentVerifiedPlayer || !isRealtimeDbConfigured()) return;
     const { auth } = await getFirebasePublicServices();
-    const { rtdb, dbMod } = await getPublicRealtimeDb();
     if (!auth.currentUser || !auth.currentUser.emailVerified) return;
 
     const gObj = latestPublicGamesCache.find((g) => g.id === gameId) || {};
-    const pRef = dbMod.ref(rtdb, `users/${auth.currentUser.uid}/purchases/${gameId}`);
-    await dbMod.set(pRef, {
+    const nowTs = Date.now();
+    const pData = {
       gameId,
       gameTitle: gObj.title || receiptData.gameTitle || "Drevalith Game",
       coverImageUrl: gObj.coverImageUrl || "",
@@ -896,12 +946,25 @@
       paymentId: receiptData.paymentId || "",
       amount: Number(gObj.price || 0),
       currency: gObj.currency || "USD",
-      purchasedAt: Date.now(),
+      purchasedAt: nowTs,
       purchasedVersion: gObj.version || "v1.0.0",
       lastDownloadedVersion: gObj.version || "v1.0.0",
-      lastDownloadedBuildUpdatedAt: Number(gObj.buildUpdatedAt || gObj.updatedAt || Date.now()),
+      lastDownloadedBuildUpdatedAt: Number(gObj.buildUpdatedAt || gObj.updatedAt || nowTs),
       downloadRef: receiptData.rawDownloadRef || ""
-    });
+    };
+
+    currentPlayerPurchases = { ...currentPlayerPurchases, [gameId]: pData };
+    emitAuthState();
+
+    try {
+      const freshToken = await auth.currentUser.getIdToken();
+      await rtdbRestJson("PUT", `users/${auth.currentUser.uid}/purchases/${gameId}`, pData, freshToken);
+    } catch (_) {
+      try {
+        const { rtdb, dbMod } = await getPublicRealtimeDb();
+        await dbMod.set(dbMod.ref(rtdb, `users/${auth.currentUser.uid}/purchases/${gameId}`), pData);
+      } catch (__) {}
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -1077,15 +1140,26 @@
     }
 
     if (currentVerifiedPlayer && currentPlayerPurchases[gameId] && isRealtimeDbConfigured()) {
+      const dlPatch = {
+        lastDownloadedVersion: game.version || "v1.0.0",
+        lastDownloadedBuildUpdatedAt: Number(game.buildUpdatedAt || game.updatedAt || Date.now()),
+        lastDownloadedAt: Date.now()
+      };
+      currentPlayerPurchases = {
+        ...currentPlayerPurchases,
+        [gameId]: { ...currentPlayerPurchases[gameId], ...dlPatch }
+      };
+      emitAuthState();
       try {
         const { auth } = await getFirebasePublicServices();
-        const { rtdb, dbMod } = await getPublicRealtimeDb();
         if (auth.currentUser) {
-          await dbMod.update(dbMod.ref(rtdb, `users/${auth.currentUser.uid}/purchases/${gameId}`), {
-            lastDownloadedVersion: game.version || "v1.0.0",
-            lastDownloadedBuildUpdatedAt: Number(game.buildUpdatedAt || game.updatedAt || Date.now()),
-            lastDownloadedAt: Date.now()
-          });
+          const freshToken = await auth.currentUser.getIdToken();
+          await rtdbRestJson(
+            "PATCH",
+            `users/${auth.currentUser.uid}/purchases/${gameId}`,
+            dlPatch,
+            freshToken
+          );
         }
       } catch (_) {}
     }
