@@ -61,16 +61,64 @@
   let latestPublicSettingsCache = {};
   let hasLoadedLiveGamesSnapshot = false;
 
+  function isValidRzpKeyId(rawKey) {
+    const k = String(rawKey || "").trim();
+    return Boolean(k && k.startsWith("rzp_") && k.length >= 14 && !/YOUR_|XXXX|CHANGE_ME/i.test(k));
+  }
+
   function getActiveRazorpayKeyId() {
-    const cfgKey = String(CFG.RAZORPAY_KEY_ID || "").trim();
-    if (cfgKey && !cfgKey.startsWith("YOUR_") && cfgKey.startsWith("rzp_")) {
-      return cfgKey;
-    }
+    const liveWinCfg = (typeof window !== "undefined" && window.DREVALITH_CONFIG) || CFG;
+    const cfgKey = String((liveWinCfg && liveWinCfg.RAZORPAY_KEY_ID) || CFG.RAZORPAY_KEY_ID || "").trim();
     const dbKey = String((latestPublicSettingsCache && latestPublicSettingsCache.razorpayKeyId) || "").trim();
-    if (dbKey && !dbKey.startsWith("YOUR_") && dbKey.startsWith("rzp_")) {
-      return dbKey;
-    }
+
+    // Always prefer an active Live Mode key (rzp_live_...) so a leftover test setting never forces Test Mode!
+    if (isValidRzpKeyId(dbKey) && dbKey.startsWith("rzp_live_")) return dbKey;
+    if (isValidRzpKeyId(cfgKey) && cfgKey.startsWith("rzp_live_")) return cfgKey;
+    if (isValidRzpKeyId(dbKey)) return dbKey;
+    if (isValidRzpKeyId(cfgKey)) return cfgKey;
     return "";
+  }
+
+  function getRazorpayKeyMode() {
+    const k = getActiveRazorpayKeyId();
+    if (k.startsWith("rzp_live_")) return "live";
+    if (k.startsWith("rzp_test_")) return "test";
+    return "sandbox";
+  }
+
+  async function refreshRazorpayKeyFromLiveSources() {
+    const existing = getActiveRazorpayKeyId();
+    if (existing) return existing;
+
+    if (isRealtimeDbConfigured()) {
+      try {
+        const sMap = await rtdbRestJson("GET", "settings/public_store");
+        if (sMap && typeof sMap === "object") {
+          latestPublicSettingsCache = { ...latestPublicSettingsCache, ...sMap };
+          const afterDb = getActiveRazorpayKeyId();
+          if (afterDb) return afterDb;
+        }
+      } catch (_) {}
+    }
+
+    if (typeof fetch === "function") {
+      try {
+        const cfgUrl = `${API_BASE ? API_BASE + "/" : ""}js/store-config.js?nocache=${Date.now()}`;
+        const res = await fetch(cfgUrl, { cache: "no-store" });
+        if (res.ok) {
+          const txt = await res.text();
+          const m = txt.match(/RAZORPAY_KEY_ID\s*:\s*["']([^"']+)["']/);
+          if (m && isValidRzpKeyId(m[1])) {
+            CFG.RAZORPAY_KEY_ID = m[1].trim();
+            if (typeof window !== "undefined" && window.DREVALITH_CONFIG) {
+              window.DREVALITH_CONFIG.RAZORPAY_KEY_ID = CFG.RAZORPAY_KEY_ID;
+            }
+            return CFG.RAZORPAY_KEY_ID;
+          }
+        }
+      } catch (_) {}
+    }
+    return getActiveRazorpayKeyId();
   }
 
   function isRazorpayLiveKeyConfigured() {
@@ -1641,12 +1689,21 @@
       firebaseDatabaseUrl: isRealtimeDbConfigured() ? fc.databaseURL : "",
       firebaseProjectId: isFirebaseConfigured() ? fc.projectId : ""
     });
-    if (backendOrder) return backendOrder;
+
+    // Only accept backendOrder directly when it carries a real Razorpay key (live_razorpay / live_razorpay_serverless).
+    // NEVER allow a keyless backend sandbox_preview fallback to override a configured rzp_live_ / rzp_test_ key!
+    if (
+      backendOrder &&
+      (backendOrder.mode === "live_razorpay" || backendOrder.mode === "live_razorpay_serverless") &&
+      isValidRzpKeyId(backendOrder.keyId)
+    ) {
+      return backendOrder;
+    }
 
     const amountSubunits = Math.round(Number(game.price || 0) * 100);
     const currency = String(game.currency || "USD").toUpperCase() === "INR" ? "INR" : "USD";
-    const activeRzpKey = getActiveRazorpayKeyId();
-    if (activeRzpKey) {
+    const activeRzpKey = (await refreshRazorpayKeyFromLiveSources()) || getActiveRazorpayKeyId();
+    if (isValidRzpKeyId(activeRzpKey)) {
       return {
         mode: "live_razorpay_serverless",
         keyId: activeRzpKey,
@@ -1657,6 +1714,9 @@
         gameTitle: game.title
       };
     }
+
+    if (backendOrder) return backendOrder;
+
     return {
       mode: "sandbox_preview",
       orderId: `order_local_${Date.now()}`,
@@ -1711,15 +1771,20 @@
 
       const buyerEmail =
         (currentVerifiedPlayer && currentVerifiedPlayer.email) || String(payload.buyerEmail || "");
+      const resolvedPaidAmount = Number(
+        payload.amount !== undefined ? payload.amount : payload.amountPaid || 0
+      );
       await dbMod
         .set(dbMod.ref(rtdb, `transactions/txn_${pid.replace(/[^a-zA-Z0-9_]/g, "")}`), {
           id: `txn_${Date.now()}`,
           type: "razorpay",
-          mode: payload.mode || "live_razorpay",
+          mode:
+            payload.mode ||
+            (getRazorpayKeyMode() === "live" ? "live_razorpay" : "test_razorpay"),
           gameId: payload.gameId,
           gameTitle: payload.gameTitle || "Game",
-          amount: Number(payload.amount || 0),
-          currency: payload.currency || "USD",
+          amount: resolvedPaidAmount,
+          currency: payload.currency || "INR",
           paymentId: pid,
           buyerUid: currentVerifiedPlayer ? currentVerifiedPlayer.uid : "",
           buyerEmail,
@@ -1901,6 +1966,7 @@
     isRealtimeDbConfigured,
     isRazorpayLiveKeyConfigured,
     getActiveRazorpayKeyId,
+    getRazorpayKeyMode,
     formatPrice,
     formatCurrency: (price, currency) => formatPrice(price, currency, false),
     formatPrivateKeyInput,
