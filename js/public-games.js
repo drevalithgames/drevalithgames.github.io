@@ -32,6 +32,7 @@
   let activeAuthTab = "login"; // "login" | "signup" | "verify"
   let pendingCheckoutGameId = "";
   let pendingKeyGameId = "";
+  let pendingSignupPayload = null;
   let authFormRenderNonce = 0;
   let mountedAuthModeKey = "";
   let wasWaitingForEmailVerify = false;
@@ -714,6 +715,69 @@
         stroke-dashoffset: 60;
         animation: rzpCheckDraw 0.42s 0.25s ease forwards;
       }
+      .drev-terms-scroll {
+        max-height: 340px;
+        overflow-y: auto;
+        padding: 1.05rem 1.15rem;
+        border-radius: 12px;
+        background: rgba(4, 6, 12, 0.88);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        font-size: 0.84rem;
+        line-height: 1.6;
+        color: #cbd5e1;
+        margin-bottom: 1rem;
+      }
+      .drev-terms-scroll h4 {
+        color: #ffffff;
+        font-size: 0.86rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin: 0.95rem 0 0.35rem 0;
+      }
+      .drev-terms-scroll h4:first-child {
+        margin-top: 0;
+      }
+      .drev-terms-scroll p {
+        margin-bottom: 0.55rem;
+      }
+      .drev-terms-chk-wrap {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.7rem;
+        padding: 0.8rem 0.95rem;
+        border-radius: 10px;
+        background: rgba(242, 53, 25, 0.08);
+        border: 1px solid rgba(242, 53, 25, 0.35);
+        margin-bottom: 1rem;
+        cursor: pointer;
+      }
+      .drev-terms-chk-wrap input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        margin-top: 0.15rem;
+        accent-color: #f23519;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .drev-footer-policies {
+        margin-top: 0.55rem;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 0.65rem;
+        flex-wrap: wrap;
+        font-size: 0.78rem;
+      }
+      .drev-footer-policies a {
+        color: var(--text-muted);
+        text-decoration: none;
+        transition: color 0.2s ease;
+      }
+      .drev-footer-policies a:hover {
+        color: #ffffff;
+        text-decoration: underline;
+      }
       .drev-toast {
         position: fixed;
         bottom: 1.5rem;
@@ -1001,6 +1065,9 @@
                   <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Account</span>
                   <span style="color:#4ade80;font-weight:800;">✔ Verified</span>
                   ${dbProf.createdAt ? `<span style="color:var(--text-muted);font-size:0.82rem;"> • ${esc(joinedDate)}</span>` : ""}
+                  <div style="font-size:0.75rem;color:#94a3b8;margin-top:0.18rem;">
+                    ✔ Terms &amp; No-Refund Accepted
+                  </div>
                 </div>
               </div>
             </div>
@@ -1168,7 +1235,7 @@
               <input type="password" id="drev-signup-pass2" name="f_d_${rk}" value="" class="drev-input" placeholder="••••••••" autocomplete="new-password" autocorrect="off" autocapitalize="none" spellcheck="false" aria-autocomplete="none" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
             </div>
             <button type="submit" id="drev-signup-btn" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
-              Sign Up
+              Create Account
             </button>
           </form>
         `
@@ -1351,6 +1418,100 @@
             🎮 Open My Purchases Library
           </button>
           <p id="drev-unlocked-receipt" style="font-size:0.77rem;color:var(--text-muted);text-align:center;"></p>
+        </div>
+      </div>
+
+      <!-- OFFICIAL TERMS & CONDITIONS, NO-REFUND & HORROR / GAME RISK AGREEMENT MODAL -->
+      <div class="drev-modal-backdrop" id="drev-terms-modal">
+        <div class="drev-modal-box" style="max-width:640px;border-color:rgba(242,53,25,0.55);">
+          <button class="drev-modal-close" type="button" onclick="window.DrevalithPublicUI.declineSignupTerms()">✕</button>
+          <span class="section-tag" style="margin-bottom:0.2rem;">Drevalith Games™ // Official User Agreement (v1.0)</span>
+          <h3 id="drev-terms-modal-title" style="font-size:1.35rem;font-weight:900;text-transform:uppercase;margin-bottom:0.35rem;color:#fff;">
+            Terms &amp; Conditions, No-Refund &amp; Content Warning
+          </h3>
+          <p id="drev-terms-modal-sub" style="color:var(--text-muted);font-size:0.85rem;margin-bottom:0.9rem;">
+            Please read and accept all studio terms below before creating your account and verifying your email.
+          </p>
+
+          <div id="drev-terms-alert" class="drev-alert"></div>
+
+          <div class="drev-terms-scroll" id="drev-terms-scroll-box">
+            <h4 id="drev-policy-refund">1. Strict Digital Goods No-Refund &amp; No-Cancellation Policy (Payments)</h4>
+            <p>
+              All games, downloadable builds (<code>.ZIP</code> archives), and digital content offered on <strong>Drevalith Games™</strong> are instant digital software products. Once a payment is completed or a game build / Studio Private Key is unlocked in your account, <strong>all sales are 100% final, non-refundable, and non-cancellable</strong>.
+            </p>
+            <p>
+              You are solely responsible for verifying that your computer meets the required Windows PC operating system, storage, graphics, and hardware specifications prior to purchasing any title. Change of mind, game difficulty, inability to complete in-game puzzles, fear/discomfort from horror content, or local PC incompatibility do <strong>not</strong> qualify for a refund, return, or credit. Initiating an unauthorized bank dispute or payment chargeback after unlocking a digital game permanently revokes your account and all software licenses. (Only verified duplicate technical billing errors where the identical order was charged twice without delivery will be reviewed.)
+            </p>
+
+            <h4 id="drev-policy-horror">2. Horror, Photosensitivity, Seizure &amp; Health Assumption of Risk (All Games)</h4>
+            <p>
+              <strong>IMPORTANT HEALTH &amp; CONTENT WARNING:</strong> Games developed and published by <strong>Drevalith Games™</strong> (including horror, escape, co-op survival, thriller, and all other genres) may feature intense psychological tension, jump scares, sudden loud sound effects, dark decaying medical/industrial environments, flickering or flashing electrical lights, surveillance distortion, pursuit mechanics, and mature horror themes.
+            </p>
+            <p>
+              <strong>Photosensitive Epilepsy &amp; Medical Advisory:</strong> Exposure to flashing lights, high-contrast patterns, or sudden fright may trigger epileptic seizures, dizziness, disorientation, elevated heart rate, panic, or physical discomfort—even in individuals with no prior medical history. If you have epilepsy, a heart condition, severe anxiety, PTSD, or any medical sensitivity, consult a physician before playing and stop playing immediately if you experience any symptoms. By creating an account, purchasing, downloading, or playing any Drevalith Games™ title, <strong>you voluntarily assume 100% of all physical, medical, emotional, and psychological risks</strong>.
+            </p>
+
+            <h4>3. Software Provided "AS IS" &amp; Complete Limitation of Liability</h4>
+            <p>
+              All games, patches, and downloadable files are provided strictly <strong>"AS IS" and "AS AVAILABLE"</strong> without warranties of any kind, express or implied. Under no circumstances shall <strong>Drevalith Games™</strong> or its creator(s) be held liable for any direct, indirect, incidental, special, health-related, hardware/software, data-loss, or consequential damages arising out of your purchase, download, installation, or use of any studio game or website service.
+            </p>
+
+            <h4>4. Personal License, Anti-Piracy &amp; Account Conduct</h4>
+            <p>
+              Purchasing or redeeming a game grants you a limited, personal, non-exclusive, non-transferable license for personal entertainment only. Re-uploading, sharing, torrenting, reselling, reverse-engineering, or publicly distributing Drevalith Games™ <code>.ZIP</code> game files or Studio Private Keys is strictly prohibited and results in immediate termination of access.
+            </p>
+
+            <h4>5. Instant Digital Delivery Policy</h4>
+            <p>
+              All games are delivered digitally through the <strong>My Purchases</strong> library on <strong>Drevalith Games™</strong> immediately after verified payment or key redemption. No physical discs or physical shipments are sent.
+            </p>
+
+            <h4 id="drev-policy-privacy">6. Privacy Policy, Database Consent &amp; Account Deletion</h4>
+            <p>
+              Drevalith Games™ collects and stores only your verified Name, Email address, Terms &amp; Conditions acceptance record/timestamp, and Purchase/License records in secure cloud storage to provide account access and game update downloads. Payment card, UPI, and netbanking credentials are processed directly by Razorpay over encrypted PCI-DSS channels and are never stored on our servers. You may permanently delete your account and database profile at any time from your Profile page. Official studio links: <strong>drevalithgames.github.io</strong> and <strong>drevalithgames.itch.io</strong>.
+            </p>
+          </div>
+
+          <div id="drev-terms-signup-controls">
+            <label class="drev-terms-chk-wrap" for="drev-terms-agree-chk">
+              <input
+                type="checkbox"
+                id="drev-terms-agree-chk"
+                onchange="window.DrevalithPublicUI.onTermsCheckboxChange(this.checked)"
+              />
+              <span style="font-size:0.84rem;color:#f1f5f9;line-height:1.45;">
+                I have read and agree to the <strong>Drevalith Games™ Terms &amp; Conditions</strong>, the <strong>Strict No-Refund Policy</strong> for all payments, and the <strong>Horror / Health &amp; Game Risk Warnings</strong>.
+              </span>
+            </label>
+
+            <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:0.7rem;">
+              <button
+                type="button"
+                id="drev-terms-accept-btn"
+                class="btn-primary"
+                disabled
+                style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;opacity:0.45;"
+                onclick="window.DrevalithPublicUI.acceptTermsAndCreateAccount()"
+              >
+                Accept &amp; Send Verification Email
+              </button>
+              <button
+                type="button"
+                class="btn-secondary"
+                style="width:100%;text-align:center;"
+                onclick="window.DrevalithPublicUI.declineSignupTerms()"
+              >
+                Decline / Back
+              </button>
+            </div>
+          </div>
+
+          <div id="drev-terms-viewonly-controls" style="display:none;">
+            <button type="button" class="btn-secondary" style="width:100%;text-align:center;" onclick="window.DrevalithPublicUI.closeModals()">
+              Close
+            </button>
+          </div>
         </div>
       </div>
 
@@ -2649,7 +2810,6 @@
       const password = document.getElementById("drev-signup-pass").value;
       const password2 = document.getElementById("drev-signup-pass2").value;
       const alertEl = document.getElementById("drev-auth-alert");
-      const btn = document.getElementById("drev-signup-btn");
 
       if (!displayName) {
         alertEl.className = "drev-alert error";
@@ -2673,16 +2833,115 @@
       }
 
       alertEl.className = "drev-alert";
-      btn.disabled = true;
-      btn.textContent = "Sending Verification Email...";
+      alertEl.textContent = "";
+
+      // Open mandatory Terms & Conditions + No-Refund + Horror Risk modal BEFORE account creation & email send!
+      pendingSignupPayload = { displayName, email, password };
+      window.DrevalithPublicUI.openTermsModal("signup");
+    },
+    openTermsModal(mode = "view", sectionAnchor = "") {
+      const m = document.getElementById("drev-terms-modal");
+      const subEl = document.getElementById("drev-terms-modal-sub");
+      const alertEl = document.getElementById("drev-terms-alert");
+      const signupCtrls = document.getElementById("drev-terms-signup-controls");
+      const viewCtrls = document.getElementById("drev-terms-viewonly-controls");
+      const chk = document.getElementById("drev-terms-agree-chk");
+      const acceptBtn = document.getElementById("drev-terms-accept-btn");
+      const scrollBox = document.getElementById("drev-terms-scroll-box");
+      if (!m) return;
+
+      if (alertEl) {
+        alertEl.className = "drev-alert";
+        alertEl.textContent = "";
+      }
+
+      const isSignupGate = mode === "signup";
+      if (signupCtrls) signupCtrls.style.display = isSignupGate ? "block" : "none";
+      if (viewCtrls) viewCtrls.style.display = isSignupGate ? "none" : "block";
+      if (subEl) {
+        subEl.textContent = isSignupGate
+          ? "Please review and accept our Terms & Conditions, Strict No-Refund Policy, and Horror / Game Risk Warnings to create your account."
+          : "Official Drevalith Games™ Terms & Conditions, No-Refund Policy, Content Warnings & Privacy Policy.";
+      }
+      if (chk) chk.checked = false;
+      if (acceptBtn) {
+        acceptBtn.disabled = true;
+        acceptBtn.style.opacity = "0.45";
+        acceptBtn.textContent = "Accept & Send Verification Email";
+      }
+      if (scrollBox) scrollBox.scrollTop = 0;
+
+      m.classList.add("open");
+
+      if (sectionAnchor) {
+        setTimeout(() => {
+          const sec = document.getElementById(sectionAnchor);
+          if (sec && typeof sec.scrollIntoView === "function") {
+            sec.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        }, 60);
+      }
+    },
+    onTermsCheckboxChange(checked) {
+      const acceptBtn = document.getElementById("drev-terms-accept-btn");
+      if (!acceptBtn) return;
+      const isOk = Boolean(checked);
+      acceptBtn.disabled = !isOk;
+      acceptBtn.style.opacity = isOk ? "1" : "0.45";
+    },
+    declineSignupTerms() {
+      pendingSignupPayload = null;
+      const m = document.getElementById("drev-terms-modal");
+      if (m) m.classList.remove("open");
+    },
+    async acceptTermsAndCreateAccount() {
+      const chk = document.getElementById("drev-terms-agree-chk");
+      const alertEl = document.getElementById("drev-terms-alert");
+      const acceptBtn = document.getElementById("drev-terms-accept-btn");
+
+      if (!chk || !chk.checked) {
+        if (alertEl) {
+          alertEl.className = "drev-alert error";
+          alertEl.textContent = "Please check the agreement box to accept the Terms & Conditions.";
+        }
+        return;
+      }
+      if (!pendingSignupPayload) {
+        closeModals();
+        return;
+      }
+
+      const { displayName, email, password } = pendingSignupPayload;
+      const acceptedTimestamp = Date.now();
+
+      if (alertEl) {
+        alertEl.className = "drev-alert";
+        alertEl.textContent = "";
+      }
+      if (acceptBtn) {
+        acceptBtn.disabled = true;
+        acceptBtn.textContent = "Saving Terms & Sending Email...";
+      }
 
       try {
-        const res = await Store.registerPlayerAccount({ displayName, email, password });
+        const res = await Store.registerPlayerAccount({
+          displayName,
+          email,
+          password,
+          termsAccepted: true,
+          termsAcceptedAt: acceptedTimestamp,
+          termsVersion: "v1.0"
+        });
+        pendingSignupPayload = null;
+        closeModals();
+
         if (res.alreadyVerified) {
-          showToast("✅ Account ready! Opening your Profile...");
+          clearAuthFormInputs();
+          showToast("✅ Terms accepted & account ready!");
           handlePostLoginContinuation();
           return;
         }
+
         clearAuthFormInputs();
         playerAuthState.pendingVerificationEmail = res.email;
         wasWaitingForEmailVerify = true;
@@ -2690,14 +2949,19 @@
         renderAccountAndPurchasesPage(true);
         showToast(
           res.sent
-            ? `📧 Verification link sent to ${res.email}!`
-            : `📩 Check your inbox (${res.email}) and click the verification link!`
+            ? `📧 Terms accepted! Verification link sent to ${res.email}.`
+            : `📩 Terms accepted! Check your inbox (${res.email}) to verify your email.`
         );
       } catch (err) {
-        alertEl.className = "drev-alert error";
-        alertEl.textContent = err.message || "Could not create account.";
-        btn.disabled = false;
-        btn.textContent = "Sign Up";
+        if (alertEl) {
+          alertEl.className = "drev-alert error";
+          alertEl.textContent = err.message || "Could not create account.";
+        }
+        if (acceptBtn) {
+          acceptBtn.disabled = false;
+          acceptBtn.style.opacity = "1";
+          acceptBtn.textContent = "Accept & Send Verification Email";
+        }
       }
     },
     async resendVerify(btn) {
@@ -2830,10 +3094,29 @@
     }
   };
 
+  function ensureFooterPolicyLinks() {
+    const footer = document.querySelector("footer");
+    if (!footer || document.getElementById("drev-footer-policy-links")) return;
+    const linksBar = document.createElement("div");
+    linksBar.id = "drev-footer-policy-links";
+    linksBar.className = "drev-footer-policies";
+    linksBar.innerHTML = `
+      <a href="#terms" onclick="event.preventDefault();window.DrevalithPublicUI.openTermsModal('view','')">Terms &amp; Conditions</a>
+      <span style="opacity:0.4;">•</span>
+      <a href="#refund-policy" onclick="event.preventDefault();window.DrevalithPublicUI.openTermsModal('view','drev-policy-refund')">No-Refund Policy</a>
+      <span style="opacity:0.4;">•</span>
+      <a href="#horror-warning" onclick="event.preventDefault();window.DrevalithPublicUI.openTermsModal('view','drev-policy-horror')">Horror &amp; Health Warning</a>
+      <span style="opacity:0.4;">•</span>
+      <a href="#privacy" onclick="event.preventDefault();window.DrevalithPublicUI.openTermsModal('view','drev-policy-privacy')">Privacy Policy</a>
+    `;
+    footer.appendChild(linksBar);
+  }
+
   window.addEventListener("DOMContentLoaded", () => {
     injectStoreStyles();
     ensurePlayerAccountPageAndNav();
     ensureModals();
+    ensureFooterPolicyLinks();
     renderAccountAndPurchasesPage(false);
 
     const hash = window.location.hash.replace("#", "").toLowerCase();
@@ -2841,6 +3124,14 @@
       if (hash === "signup") activeAuthTab = "signup";
       window.switchPage("account", false);
       renderAccountAndPurchasesPage(true);
+    } else if (hash === "terms") {
+      window.DrevalithPublicUI.openTermsModal("view", "");
+    } else if (hash === "refund-policy") {
+      window.DrevalithPublicUI.openTermsModal("view", "drev-policy-refund");
+    } else if (hash === "horror-warning") {
+      window.DrevalithPublicUI.openTermsModal("view", "drev-policy-horror");
+    } else if (hash === "privacy") {
+      window.DrevalithPublicUI.openTermsModal("view", "drev-policy-privacy");
     }
 
     Store.subscribePlayerAuth((nextAuth) => {

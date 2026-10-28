@@ -3,11 +3,11 @@
  */
 window.DREVALITH_CONFIG = {
   // 1. RAZORPAY PUBLIC KEY ID ("rzp_test_..." for testing, "rzp_live_..." for live)
-  RAZORPAY_KEY_ID: "rzp_test_Tt2lEIHMtu1j7h",
+  RAZORPAY_KEY_ID: "rzp_live_TtGKDOdYQWajUU",
 
   // 2. FIREBASE FREE SPARK WEB APP CONFIG (Realtime Database + Auth = 100% Free, No Card!)
   FIREBASE_CONFIG: {
-   apiKey: "AIzaSyCiZvaWH4ZReSJ3L0h3_1EbkclMsTTDzg4",
+    apiKey: "AIzaSyCiZvaWH4ZReSJ3L0h3_1EbkclMsTTDzg4",
   authDomain: "drevalithgames-164c5.firebaseapp.com",
   databaseURL: "https://drevalithgames-164c5-default-rtdb.firebaseio.com",
   projectId: "drevalithgames-164c5",

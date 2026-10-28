@@ -28,6 +28,8 @@
   const UNLOCK_RECEIPTS_KEY = "drevalith_verified_unlocks_v4";
   const VERIFY_COOLDOWN_PREFIX = "drev_verify_email_ts_v8_";
   const PENDING_NAME_PREFIX = "drev_pending_signup_name_v8_";
+  const PENDING_TERMS_PREFIX = "drev_pending_terms_v15_";
+  const TERMS_VERSION = "v1.0";
   const VERIFY_COOLDOWN_MS = 90 * 1000; // 90s persistent cross-tab cooldown prevents auth/too-many-requests
 
   const broadcastBus =
@@ -421,6 +423,23 @@
     }
   }
 
+  function savePendingTermsAcceptance(email, termsObj) {
+    if (!email || !termsObj) return;
+    try {
+      localStorage.setItem(PENDING_TERMS_PREFIX + email.trim().toLowerCase(), JSON.stringify(termsObj));
+    } catch (_) {}
+  }
+
+  function getSavedPendingTermsAcceptance(email) {
+    if (!email) return null;
+    try {
+      const raw = localStorage.getItem(PENDING_TERMS_PREFIX + email.trim().toLowerCase());
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function safeSendVerificationEmail(authMod, user, forceManualResend = false) {
     const email = (user.email || "").trim().toLowerCase();
     const waitSec = getVerifyCooldownRemainingSec(email);
@@ -595,12 +614,31 @@
           pendingName ||
           fallbackName;
 
+        const pendingTerms = getSavedPendingTermsAcceptance(emailLower);
+        const existingConsent = await rtdbRestJson("GET", `users/${user.uid}/terms_consent`, undefined, freshToken).catch(() => null);
+        const resolvedTermsAcceptedAt =
+          (existingVal && existingVal.termsAcceptedAt) ||
+          (existingConsent && existingConsent.acceptedAt) ||
+          (pendingTerms && pendingTerms.acceptedAt) ||
+          Date.now();
+        const resolvedTermsVersion =
+          (existingVal && existingVal.termsVersion) ||
+          (existingConsent && existingConsent.termsVersion) ||
+          (pendingTerms && pendingTerms.termsVersion) ||
+          TERMS_VERSION;
+
         const profilePayload = {
           uid: user.uid,
           name: finalName,
           displayName: finalName,
           email: emailLower,
           emailVerified: true,
+          termsAccepted: true,
+          termsVersion: resolvedTermsVersion,
+          termsAcceptedAt: resolvedTermsAcceptedAt,
+          termsAcceptedDate: new Date(resolvedTermsAcceptedAt).toISOString(),
+          noRefundPolicyAccepted: true,
+          horrorAndGameRiskAccepted: true,
           createdAt: (existingVal && existingVal.createdAt) || Date.now(),
           lastLoginAt: Date.now()
         };
@@ -620,6 +658,7 @@
 
         try {
           localStorage.removeItem(PENDING_NAME_PREFIX + emailLower);
+          localStorage.removeItem(PENDING_TERMS_PREFIX + emailLower);
         } catch (_) {}
 
         try {
@@ -820,9 +859,9 @@
     return () => authSubscribers.delete(cb);
   }
 
-  // 1. SIGN UP: Creates credential (or recovers existing unverified account), sends verification email,
-  //    and starts the 2.0s live auto-verification watcher so the account opens automatically!
-  async function registerPlayerAccount({ displayName, email, password }) {
+  // 1. SIGN UP: Requires explicit Terms & Conditions acceptance first, saves the Terms acceptance
+  //    entry to Firebase Realtime Database, and THEN sends the verification email!
+  async function registerPlayerAccount({ displayName, email, password, termsAccepted, termsAcceptedAt, termsVersion }) {
     if (!isFirebaseConfigured()) {
       throw new Error("Firebase is not configured in js/store-config.js yet.");
     }
@@ -833,9 +872,24 @@
     if (!password || password.length < 6) {
       throw new Error("Password must be at least 6 characters long.");
     }
+    if (!termsAccepted) {
+      throw new Error("Please read and accept the Terms & Conditions before creating your account.");
+    }
+
+    const acceptedTs = Number(termsAcceptedAt || Date.now());
+    const verTag = String(termsVersion || TERMS_VERSION);
+    const termsPayload = {
+      accepted: true,
+      termsVersion: verTag,
+      acceptedAt: acceptedTs,
+      acceptedDate: new Date(acceptedTs).toISOString(),
+      noRefundPolicyAccepted: true,
+      horrorAndGameRiskAccepted: true
+    };
 
     savePendingSignupName(cleanEmail, cleanName);
-    const { auth, authMod } = await getFirebasePublicServices();
+    savePendingTermsAcceptance(cleanEmail, termsPayload);
+    const { auth, authMod, rtdb, dbMod } = await getFirebasePublicServices();
 
     let targetUser = null;
     try {
@@ -874,6 +928,33 @@
       await authMod.updateProfile(targetUser, { displayName: cleanName }).catch(() => {});
     }
 
+    // STEP A: Save Terms & Conditions Acceptance Entry to Firebase Database BEFORE sending verification email!
+    if (isRealtimeDbConfigured() && targetUser) {
+      const dbTermsEntry = {
+        uid: targetUser.uid,
+        name: cleanName,
+        email: cleanEmail,
+        termsAccepted: true,
+        termsVersion: verTag,
+        termsAcceptedAt: acceptedTs,
+        termsAcceptedDate: new Date(acceptedTs).toISOString(),
+        noRefundPolicyAccepted: true,
+        horrorAndGameRiskAccepted: true
+      };
+      try {
+        const userTok = await targetUser.getIdToken();
+        await Promise.all([
+          rtdbRestJson("PUT", `terms_acceptances/${targetUser.uid}`, dbTermsEntry, userTok).catch(() => {}),
+          rtdbRestJson("PUT", `users/${targetUser.uid}/terms_consent`, dbTermsEntry, userTok).catch(() => {})
+        ]);
+      } catch (_) {
+        if (rtdb && dbMod) {
+          await dbMod.set(dbMod.ref(rtdb, `terms_acceptances/${targetUser.uid}`), dbTermsEntry).catch(() => {});
+          await dbMod.set(dbMod.ref(rtdb, `users/${targetUser.uid}/terms_consent`), dbTermsEntry).catch(() => {});
+        }
+      }
+    }
+
     // If already verified, write/fetch DB profile and enter account immediately!
     if (targetUser.emailVerified) {
       await activateVerifiedPlayerSession(targetUser, cleanName);
@@ -886,6 +967,7 @@
       };
     }
 
+    // STEP B: Now send the Email Verification link!
     const sendRes = await safeSendVerificationEmail(authMod, targetUser, false);
     pendingVerificationEmail = cleanEmail;
     currentVerifiedPlayer = null;
@@ -1074,10 +1156,14 @@
         freshToken = await user.getIdToken(true);
       } catch (_) {}
       if (freshToken) {
-        await rtdbRestJson("DELETE", `users/${uid}`, undefined, freshToken).catch(() => {});
+        await Promise.all([
+          rtdbRestJson("DELETE", `users/${uid}`, undefined, freshToken).catch(() => {}),
+          rtdbRestJson("DELETE", `terms_acceptances/${uid}`, undefined, freshToken).catch(() => {})
+        ]);
       }
       if (rtdb && dbMod) {
         await dbMod.remove(dbMod.ref(rtdb, `users/${uid}`)).catch(() => {});
+        await dbMod.remove(dbMod.ref(rtdb, `terms_acceptances/${uid}`)).catch(() => {});
       }
     }
 
@@ -1099,6 +1185,7 @@
       localStorage.removeItem(UNLOCK_RECEIPTS_KEY);
       if (emailLower) {
         localStorage.removeItem(PENDING_NAME_PREFIX + emailLower);
+        localStorage.removeItem(PENDING_TERMS_PREFIX + emailLower);
         localStorage.removeItem(VERIFY_COOLDOWN_PREFIX + emailLower);
       }
     } catch (_) {}
