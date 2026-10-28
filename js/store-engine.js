@@ -55,9 +55,24 @@
     );
   }
 
+  let latestPublicGamesCache = [];
+  let latestPublicSettingsCache = {};
+  let hasLoadedLiveGamesSnapshot = false;
+
+  function getActiveRazorpayKeyId() {
+    const cfgKey = String(CFG.RAZORPAY_KEY_ID || "").trim();
+    if (cfgKey && !cfgKey.startsWith("YOUR_") && cfgKey.startsWith("rzp_")) {
+      return cfgKey;
+    }
+    const dbKey = String((latestPublicSettingsCache && latestPublicSettingsCache.razorpayKeyId) || "").trim();
+    if (dbKey && !dbKey.startsWith("YOUR_") && dbKey.startsWith("rzp_")) {
+      return dbKey;
+    }
+    return "";
+  }
+
   function isRazorpayLiveKeyConfigured() {
-    const k = String(CFG.RAZORPAY_KEY_ID || "").trim();
-    return Boolean(k && !k.startsWith("YOUR_") && k.startsWith("rzp_"));
+    return Boolean(getActiveRazorpayKeyId());
   }
 
   function isStaticGithubHostWithoutBackend() {
@@ -236,6 +251,9 @@
   }
 
   function getUnlockForGame(gameId) {
+    if (hasLoadedLiveGamesSnapshot && !latestPublicGamesCache.some((g) => g.id === gameId)) {
+      return null;
+    }
     if (isFirebaseConfigured()) {
       if (!currentVerifiedPlayer) return null;
       if (currentPlayerPurchases && currentPlayerPurchases[gameId]) {
@@ -250,6 +268,57 @@
     }
     const map = getSavedUnlocks();
     return map[gameId] || null;
+  }
+
+  async function reconcilePurchasesWithLiveGames() {
+    if (!hasLoadedLiveGamesSnapshot) return;
+    const liveIds = new Set(latestPublicGamesCache.map((g) => g.id));
+
+    // 1. Clean orphaned local unlock receipts for games deleted by Owner
+    try {
+      const localMap = getSavedUnlocks();
+      let localChanged = false;
+      for (const gid of Object.keys(localMap)) {
+        if (!liveIds.has(gid)) {
+          delete localMap[gid];
+          localChanged = true;
+        }
+      }
+      if (localChanged) {
+        localStorage.setItem(UNLOCK_RECEIPTS_KEY, JSON.stringify(localMap));
+      }
+    } catch (_) {}
+
+    // 2. Clean orphaned /users/{uid}/purchases/{gid} for games deleted by Owner
+    const staleIds = Object.keys(currentPlayerPurchases || {}).filter((gid) => !liveIds.has(gid));
+    if (!staleIds.length) return;
+
+    const nextPurchases = { ...currentPlayerPurchases };
+    for (const gid of staleIds) {
+      delete nextPurchases[gid];
+    }
+    currentPlayerPurchases = nextPurchases;
+    emitAuthState();
+
+    if (currentVerifiedPlayer && isRealtimeDbConfigured()) {
+      try {
+        const svc = await getFirebasePublicServices();
+        const user = svc && svc.auth ? svc.auth.currentUser : null;
+        if (!user || !user.emailVerified) return;
+        const freshToken = await user.getIdToken();
+        await Promise.all(
+          staleIds.map((gid) =>
+            rtdbRestJson("DELETE", `users/${user.uid}/purchases/${gid}`, undefined, freshToken).catch(
+              async () => {
+                if (svc.rtdb && svc.dbMod) {
+                  await svc.dbMod.remove(svc.dbMod.ref(svc.rtdb, `users/${user.uid}/purchases/${gid}`)).catch(() => {});
+                }
+              }
+            )
+          )
+        );
+      } catch (_) {}
+    }
   }
 
   function normalizePrivateKeyClean(raw) {
@@ -620,6 +689,9 @@
 
     const localMap = getSavedUnlocks();
     for (const gid of Object.keys(localMap)) {
+      if (hasLoadedLiveGamesSnapshot && !latestPublicGamesCache.some((x) => x.id === gid)) {
+        continue;
+      }
       const rec = localMap[gid];
       if (rec.uid && rec.uid !== user.uid) continue;
       if (!currentPlayerPurchases[gid]) {
@@ -644,7 +716,11 @@
         }
       }
     }
-    emitAuthState();
+    if (hasLoadedLiveGamesSnapshot) {
+      await reconcilePurchasesWithLiveGames();
+    } else {
+      emitAuthState();
+    }
 
     try {
       const { rtdb, dbMod } = await getPublicRealtimeDb();
@@ -653,6 +729,9 @@
         listRef,
         (snap) => {
           currentPlayerPurchases = snap.exists() ? snap.val() || {} : {};
+          if (hasLoadedLiveGamesSnapshot) {
+            reconcilePurchasesWithLiveGames();
+          }
           emitAuthState();
         },
         () => emitAuthState()
@@ -931,6 +1010,107 @@
     emitAuthState();
   }
 
+  async function deletePlayerAccount({ confirmationText, password } = {}) {
+    if (String(confirmationText || "").trim().toUpperCase() !== "DELETE") {
+      throw new Error('Please type "DELETE" in the confirmation box to delete your account.');
+    }
+    if (!isFirebaseConfigured()) {
+      try {
+        localStorage.removeItem(UNLOCK_RECEIPTS_KEY);
+      } catch (_) {}
+      currentVerifiedPlayer = null;
+      currentDbProfile = null;
+      pendingVerificationEmail = "";
+      currentPlayerPurchases = {};
+      emitAuthState();
+      return { deleted: true };
+    }
+
+    const { auth, authMod, rtdb, dbMod } = await getFirebasePublicServices();
+    const user = auth.currentUser;
+    if (!user) {
+      throw new Error("You must be signed in to delete your account.");
+    }
+
+    const uid = user.uid;
+    const emailLower = String(user.email || "").trim().toLowerCase();
+
+    // Verify recent authentication BEFORE deleting database data so deletion is atomic!
+    if (password && String(password).length > 0) {
+      try {
+        const cred = authMod.EmailAuthProvider.credential(user.email, String(password));
+        await authMod.reauthenticateWithCredential(user, cred);
+      } catch (reauthErr) {
+        const rc = String(reauthErr.code || reauthErr.message || "");
+        if (rc.includes("wrong-password") || rc.includes("invalid-credential")) {
+          throw new Error("Incorrect password. Please enter your account password to confirm deletion.");
+        }
+        throw new Error(reauthErr.message || "Could not verify password.");
+      }
+    } else {
+      const lastSignInMs =
+        user.metadata && user.metadata.lastSignInTime ? Date.parse(user.metadata.lastSignInTime) : 0;
+      if (lastSignInMs && Date.now() - lastSignInMs > 4 * 60 * 1000) {
+        const reqErr = new Error("For security, please enter your password below to confirm account deletion.");
+        reqErr.code = "REQUIRES_PASSWORD";
+        throw reqErr;
+      }
+    }
+
+    stopAutoVerificationWatcher();
+    if (unsubProfileRef) {
+      unsubProfileRef();
+      unsubProfileRef = null;
+    }
+    if (unsubPurchasesRef) {
+      unsubPurchasesRef();
+      unsubPurchasesRef = null;
+    }
+
+    // 1. Delete /users/{uid} (profile + purchases + all user records) from Firebase Realtime Database
+    if (isRealtimeDbConfigured()) {
+      let freshToken = "";
+      try {
+        freshToken = await user.getIdToken(true);
+      } catch (_) {}
+      if (freshToken) {
+        await rtdbRestJson("DELETE", `users/${uid}`, undefined, freshToken).catch(() => {});
+      }
+      if (rtdb && dbMod) {
+        await dbMod.remove(dbMod.ref(rtdb, `users/${uid}`)).catch(() => {});
+      }
+    }
+
+    // 2. Delete user credential permanently from Firebase Authentication
+    try {
+      await authMod.deleteUser(user);
+    } catch (delErr) {
+      const dc = String(delErr.code || delErr.message || "");
+      if (dc.includes("requires-recent-login")) {
+        const reqErr = new Error("For security, please enter your password below to confirm account deletion.");
+        reqErr.code = "REQUIRES_PASSWORD";
+        throw reqErr;
+      }
+      throw new Error(delErr.message || "Could not delete Firebase Authentication account.");
+    }
+
+    // 3. Purge all local cached state & receipts
+    try {
+      localStorage.removeItem(UNLOCK_RECEIPTS_KEY);
+      if (emailLower) {
+        localStorage.removeItem(PENDING_NAME_PREFIX + emailLower);
+        localStorage.removeItem(VERIFY_COOLDOWN_PREFIX + emailLower);
+      }
+    } catch (_) {}
+
+    currentVerifiedPlayer = null;
+    currentDbProfile = null;
+    pendingVerificationEmail = "";
+    currentPlayerPurchases = {};
+    emitAuthState();
+    return { deleted: true };
+  }
+
   async function savePurchaseToVerifiedAccount(gameId, receiptData) {
     if (!currentVerifiedPlayer || !isRealtimeDbConfigured()) return;
     const { auth } = await getFirebasePublicServices();
@@ -1188,8 +1368,6 @@
     return rzpScriptPromise;
   }
 
-  let latestPublicGamesCache = [];
-
   function subscribePublicStore(onChange) {
     if (isRealtimeDbConfigured()) {
       let unsubGames = null;
@@ -1214,24 +1392,36 @@
       let lastEmittedSig = "";
       const emit = () => {
         latestPublicGamesCache = latestGames;
+        latestPublicSettingsCache = latestSettings || {};
+        if (hasLoadedLiveGamesSnapshot) {
+          reconcilePurchasesWithLiveGames();
+        }
         let nextSig = "";
         try {
-          nextSig = JSON.stringify({ g: latestGames, s: latestSettings });
+          nextSig = JSON.stringify({ l: hasLoadedLiveGamesSnapshot, g: latestGames, s: latestSettings });
         } catch (_) {}
         if (nextSig && nextSig === lastEmittedSig) return;
         lastEmittedSig = nextSig;
         onChange({
           mode: "firebase_rtdb",
+          loaded: hasLoadedLiveGamesSnapshot,
           settings: latestSettings,
           games: latestGames
         });
       };
 
-      // Instant HTTPS REST fetch (<150ms) so games appear immediately even if WebSockets are blocked!
+      // Instant HTTPS REST fetch (<150ms) so games & Razorpay settings load immediately!
       const fetchViaRest = async () => {
         try {
-          const gMap = await rtdbRestJson("GET", "games");
+          const [gMap, sMap] = await Promise.all([
+            rtdbRestJson("GET", "games"),
+            rtdbRestJson("GET", "settings/public_store").catch(() => null)
+          ]);
           latestGames = parseGamesMap(gMap);
+          if (sMap && typeof sMap === "object") {
+            latestSettings = sMap;
+          }
+          hasLoadedLiveGamesSnapshot = true;
           emit();
         } catch (_) {}
       };
@@ -1242,6 +1432,7 @@
         .then(({ rtdb, dbMod }) => {
           unsubGames = dbMod.onValue(dbMod.ref(rtdb, "games"), (snap) => {
             latestGames = parseGamesMap(snap.val());
+            hasLoadedLiveGamesSnapshot = true;
             emit();
           });
           unsubSettings = dbMod.onValue(dbMod.ref(rtdb, "settings/public_store"), (snap) => {
@@ -1259,7 +1450,7 @@
     }
 
     if (isStaticGithubHostWithoutBackend()) {
-      onChange({ mode: "unconfigured", settings: { showDefaultComingSoon: true }, games: [] });
+      onChange({ mode: "unconfigured", loaded: false, settings: { showDefaultComingSoon: true }, games: [] });
       return () => {};
     }
 
@@ -1273,8 +1464,12 @@
         const state = await res.json();
         if (active) {
           latestPublicGamesCache = state.games || [];
+          latestPublicSettingsCache = state.settings || {};
+          hasLoadedLiveGamesSnapshot = true;
+          reconcilePurchasesWithLiveGames();
           onChange({
             mode: "server_realtime",
+            loaded: true,
             settings: state.settings || { showDefaultComingSoon: true },
             games: state.games || [],
             razorpayConfigured: Boolean(state.razorpayConfigured)
@@ -1293,8 +1488,12 @@
             const msg = JSON.parse(ev.data);
             if (msg && msg.type === "store_sync" && msg.state && active) {
               latestPublicGamesCache = msg.state.games || [];
+              latestPublicSettingsCache = msg.state.settings || {};
+              hasLoadedLiveGamesSnapshot = true;
+              reconcilePurchasesWithLiveGames();
               onChange({
                 mode: "server_realtime",
+                loaded: true,
                 settings: msg.state.settings || { showDefaultComingSoon: true },
                 games: msg.state.games || [],
                 razorpayConfigured: Boolean(msg.state.razorpayConfigured)
@@ -1359,10 +1558,11 @@
 
     const amountSubunits = Math.round(Number(game.price || 0) * 100);
     const currency = String(game.currency || "USD").toUpperCase() === "INR" ? "INR" : "USD";
-    if (isRazorpayLiveKeyConfigured()) {
+    const activeRzpKey = getActiveRazorpayKeyId();
+    if (activeRzpKey) {
       return {
         mode: "live_razorpay_serverless",
-        keyId: CFG.RAZORPAY_KEY_ID,
+        keyId: activeRzpKey,
         orderId: "",
         amount: amountSubunits,
         currency,
@@ -1613,6 +1813,7 @@
     isFirebaseConfigured,
     isRealtimeDbConfigured,
     isRazorpayLiveKeyConfigured,
+    getActiveRazorpayKeyId,
     formatPrice,
     formatCurrency: (price, currency) => formatPrice(price, currency, false),
     formatPrivateKeyInput,
@@ -1627,6 +1828,7 @@
     updatePlayerProfileName,
     sendPlayerPasswordReset,
     logoutPlayerAccount,
+    deletePlayerAccount,
     loadRazorpayCheckoutScript,
     createPaymentOrder,
     verifyRazorpayPayment,

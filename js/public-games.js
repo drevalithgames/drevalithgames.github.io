@@ -16,6 +16,7 @@
   if (!Store) return;
 
   let currentStoreState = {
+    loaded: false,
     settings: { showDefaultComingSoon: true },
     games: []
   };
@@ -61,10 +62,23 @@
 
   function isGameOwnedByUser(gameId) {
     if (!gameId) return false;
+    if (currentStoreState.loaded && !(currentStoreState.games || []).some((g) => g.id === gameId)) {
+      return false;
+    }
     const pMap = playerAuthState.purchases || {};
     if (pMap[gameId]) return true;
     if (playerAuthState.user && Store.getUnlockForGame(gameId)) return true;
     return false;
+  }
+
+  function getVisiblePlayerPurchaseIds() {
+    const purchasesMap = playerAuthState.purchases || {};
+    const liveIds = currentStoreState.loaded
+      ? new Set((currentStoreState.games || []).map((g) => g.id))
+      : null;
+    return Object.keys(purchasesMap)
+      .filter((gid) => !liveIds || liveIds.has(gid))
+      .sort((a, b) => (purchasesMap[b].purchasedAt || 0) - (purchasesMap[a].purchasedAt || 0));
   }
 
   function esc(str) {
@@ -433,6 +447,7 @@
         font-size: 0.96rem;
         font-family: inherit;
         outline: none;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
       }
       .drev-input:-webkit-autofill,
       .drev-input:-webkit-autofill:hover,
@@ -440,8 +455,6 @@
         -webkit-text-fill-color: #ffffff;
         -webkit-box-shadow: 0 0 0px 1000px #070a11 inset;
         transition: background-color 9999s ease-out 0s;
-      }
-        transition: border-color 0.2s ease, box-shadow 0.2s ease;
       }
       .drev-input:focus {
         border-color: var(--accent);
@@ -481,36 +494,225 @@
         border: 1px solid rgba(251, 191, 36, 0.45);
         color: #fde68a;
       }
-      .rzp-sim-header {
+      .rzp-checkout-box {
+        width: 100%;
+        max-width: 500px;
+        border-radius: 16px;
+        background: #ffffff;
+        color: #0f172a;
+        overflow: hidden;
+        box-shadow: 0 28px 90px rgba(0, 0, 0, 0.88);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      .rzp-top-banner {
         background: linear-gradient(135deg, #f23519 0%, #b91c08 100%);
-        margin: -1.85rem -1.85rem 1.3rem -1.85rem;
-        padding: 1.35rem 1.65rem;
-        border-radius: 15px 15px 0 0;
+        color: #fff;
+        padding: 1.15rem 1.35rem;
         display: flex;
         align-items: center;
         justify-content: space-between;
+        gap: 0.85rem;
       }
-      .rzp-method-grid {
+      .rzp-merchant-badge {
+        width: 42px;
+        height: 42px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.28);
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 900;
+        font-size: 0.92rem;
+        letter-spacing: 0.04em;
+        flex-shrink: 0;
+      }
+      .rzp-contact-strip {
+        background: #f8fafc;
+        border-bottom: 1px solid #e2e8f0;
+        padding: 0.55rem 1.25rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.65rem;
+        font-size: 0.78rem;
+        color: #475569;
+      }
+      .rzp-tabs-nav {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        background: #f1f5f9;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .rzp-tab-btn {
+        border: none;
+        background: transparent;
+        padding: 0.72rem 0.35rem;
+        font-size: 0.76rem;
+        font-weight: 700;
+        color: #475569;
+        cursor: pointer;
+        border-bottom: 2.5px solid transparent;
+        transition: all 0.18s ease;
+        font-family: inherit;
+      }
+      .rzp-tab-btn:hover {
+        color: #0f172a;
+        background: rgba(255, 255, 255, 0.55);
+      }
+      .rzp-tab-btn.active {
+        color: #f23519;
+        background: #ffffff;
+        border-bottom-color: #f23519;
+      }
+      .rzp-body-area {
+        padding: 1.2rem 1.35rem 1.3rem 1.35rem;
+        background: #ffffff;
+      }
+      .rzp-light-input, .rzp-light-select {
+        width: 100%;
+        padding: 0.7rem 0.85rem;
+        border-radius: 8px;
+        border: 1.5px solid #cbd5e1;
+        background: #ffffff;
+        color: #0f172a;
+        font-size: 0.9rem;
+        font-family: inherit;
+        outline: none;
+        transition: border-color 0.18s ease, box-shadow 0.18s ease;
+      }
+      .rzp-light-input:focus, .rzp-light-select:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+      }
+      .rzp-light-label {
+        display: block;
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #475569;
+        margin-bottom: 0.32rem;
+      }
+      .rzp-bank-grid {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 0.5rem;
-        margin-bottom: 1rem;
+        gap: 0.55rem;
+        margin-bottom: 0.85rem;
       }
-      .rzp-method-chip {
-        padding: 0.55rem 0.5rem;
-        border-radius: 8px;
-        border: 1px solid var(--border);
-        background: rgba(255, 255, 255, 0.04);
-        color: var(--text-muted);
-        font-size: 0.78rem;
-        font-weight: 700;
+      .rzp-bank-card {
+        border: 1.5px solid #e2e8f0;
+        border-radius: 9px;
+        padding: 0.58rem 0.45rem;
         text-align: center;
         cursor: pointer;
+        background: #f8fafc;
+        transition: all 0.16s ease;
       }
-      .rzp-method-chip.active {
-        border-color: var(--accent);
-        background: rgba(242, 53, 25, 0.16);
+      .rzp-bank-card:hover {
+        border-color: #94a3b8;
+        background: #ffffff;
+      }
+      .rzp-bank-card.selected {
+        border-color: #2563eb;
+        background: #eff6ff;
+        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+      }
+      .rzp-bank-icon {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        margin: 0 auto 0.3rem auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.68rem;
+        font-weight: 900;
         color: #fff;
+      }
+      .rzp-pay-cta {
+        width: 100%;
+        padding: 0.88rem 1.2rem;
+        border: none;
+        border-radius: 9px;
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+        color: #ffffff;
+        font-size: 0.94rem;
+        font-weight: 800;
+        cursor: pointer;
+        box-shadow: 0 8px 22px rgba(37, 99, 235, 0.32);
+        transition: transform 0.16s ease, opacity 0.16s ease;
+        font-family: inherit;
+      }
+      .rzp-pay-cta:hover:not(:disabled) {
+        transform: translateY(-1px);
+      }
+      .rzp-pay-cta:disabled {
+        opacity: 0.65;
+        cursor: not-allowed;
+      }
+      .rzp-error-box {
+        display: none;
+        padding: 0.58rem 0.78rem;
+        border-radius: 8px;
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        color: #b91c1c;
+        font-size: 0.8rem;
+        font-weight: 600;
+        margin-bottom: 0.8rem;
+      }
+      .rzp-error-box.show {
+        display: block;
+      }
+      .rzp-footer-trust {
+        background: #f8fafc;
+        border-top: 1px solid #e2e8f0;
+        padding: 0.58rem 1.2rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 0.72rem;
+        color: #64748b;
+      }
+      @keyframes rzpSpin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes rzpCirclePop {
+        0% { transform: scale(0.4); opacity: 0; }
+        65% { transform: scale(1.08); opacity: 1; }
+        100% { transform: scale(1); opacity: 1; }
+      }
+      @keyframes rzpCheckDraw {
+        0% { stroke-dashoffset: 60; }
+        100% { stroke-dashoffset: 0; }
+      }
+      .rzp-spinner {
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        border: 4px solid #e2e8f0;
+        border-top-color: #2563eb;
+        margin: 0 auto 1rem auto;
+        animation: rzpSpin 0.75s linear infinite;
+      }
+      .rzp-success-badge {
+        width: 78px;
+        height: 78px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+        box-shadow: 0 12px 32px rgba(22, 163, 74, 0.38);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 auto 1rem auto;
+        animation: rzpCirclePop 0.45s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+      }
+      .rzp-success-badge svg path {
+        stroke-dasharray: 60;
+        stroke-dashoffset: 60;
+        animation: rzpCheckDraw 0.42s 0.25s ease forwards;
       }
       .drev-toast {
         position: fixed;
@@ -607,8 +809,9 @@
     if (!playerAuthState.user) return 0;
     const purchases = playerAuthState.purchases || {};
     const games = currentStoreState.games || [];
+    const visibleIds = getVisiblePlayerPurchaseIds();
     let count = 0;
-    for (const gid of Object.keys(purchases)) {
+    for (const gid of visibleIds) {
       const g = games.find((x) => x.id === gid);
       if (g && Store.hasGameUpdateAvailable(g, purchases[gid])) count += 1;
     }
@@ -671,9 +874,7 @@
         : "Verified Member";
 
       const purchasesMap = playerAuthState.purchases || {};
-      const purchaseIds = Object.keys(purchasesMap).sort(
-        (a, b) => (purchasesMap[b].purchasedAt || 0) - (purchasesMap[a].purchasedAt || 0)
-      );
+      const purchaseIds = getVisiblePlayerPurchaseIds();
       const updatesCount = countAvailableUpdates();
 
       const cardsHtml = !purchaseIds.length
@@ -808,6 +1009,9 @@
               <button type="button" class="btn-secondary" onclick="window.switchPage('games')">Browse Games</button>
               <button type="button" class="btn-secondary" style="border-color:rgba(239,68,68,0.45);color:#fca5a5;" onclick="window.DrevalithPublicUI.logoutPlayer()">
                 Sign Out
+              </button>
+              <button type="button" class="btn-secondary" style="border-color:rgba(239,68,68,0.7);background:rgba(239,68,68,0.12);color:#fecaca;" onclick="window.DrevalithPublicUI.openDeleteAccountModal()">
+                Delete Account
               </button>
             </div>
           </div>
@@ -1044,46 +1248,90 @@
         </div>
       </div>
 
-      <!-- RAZORPAY SANDBOX PREVIEW CHECKOUT -->
+      <!-- AUTHENTIC RAZORPAY CHECKOUT INTERFACE (TEST / GATEWAY CHECKOUT) -->
       <div class="drev-modal-backdrop" id="drev-rzp-sandbox-modal">
-        <div class="drev-modal-box">
-          <div class="rzp-sim-header">
-            <div>
-              <div style="font-size:0.7rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;opacity:0.9;">
-                Razorpay Checkout • Test Sandbox
-              </div>
-              <div id="rzp-sim-title" style="font-size:1.12rem;font-weight:900;color:#fff;margin-top:0.15rem;">
-                Drevalith Games™
-              </div>
+        <div class="rzp-checkout-box" id="drev-rzp-checkout-box"></div>
+      </div>
+
+      <!-- RAZORPAY ANIMATED PAYMENT SUCCESS OVERLAY -->
+      <div class="drev-modal-backdrop" id="drev-rzp-success-modal">
+        <div class="rzp-checkout-box" style="max-width:410px;padding:2.2rem 1.75rem;text-align:center;">
+          <div class="rzp-success-badge">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
+              <path d="M5 13l4.5 4.5L19 7" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div style="font-size:0.72rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:#16a34a;margin-bottom:0.25rem;">
+            Razorpay Verified
+          </div>
+          <h3 style="font-size:1.38rem;font-weight:900;color:#0f172a;margin:0 0 0.35rem 0;">
+            Payment Successful!
+          </h3>
+          <div id="drev-rzp-success-amt" style="font-size:1.55rem;font-weight:900;color:#0f172a;margin-bottom:0.4rem;">$0.00</div>
+          <div id="drev-rzp-success-meta" style="font-size:0.8rem;color:#64748b;margin-bottom:0.3rem;"></div>
+          <div style="font-size:0.76rem;color:#16a34a;font-weight:700;">Adding game to My Purchases...</div>
+        </div>
+      </div>
+
+      <!-- DELETE ACCOUNT CONFIRMATION MODAL -->
+      <div class="drev-modal-backdrop" id="drev-delete-account-modal">
+        <div class="drev-modal-box" style="max-width:460px;border-color:rgba(239,68,68,0.65);">
+          <button class="drev-modal-close" type="button" onclick="window.DrevalithPublicUI.closeModals()">✕</button>
+          <span class="section-tag" style="color:#f87171;margin-bottom:0.25rem;">Account Security</span>
+          <h3 style="font-size:1.35rem;font-weight:900;text-transform:uppercase;margin-bottom:0.45rem;color:#fff;">
+            Delete Account
+          </h3>
+          <p style="color:var(--text-muted);font-size:0.88rem;line-height:1.55;margin-bottom:1.1rem;">
+            This permanently deletes your profile, purchased games library, and account from the database. This action cannot be undone.
+          </p>
+          <div id="drev-delete-acc-alert" class="drev-alert"></div>
+          <form id="drev-delete-acc-form" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" novalidate onsubmit="window.DrevalithPublicUI.submitDeleteAccount(event)">
+            <div class="drev-field">
+              <label for="drev-delete-confirm-text">Type <strong style="color:#f87171;">DELETE</strong> to confirm *</label>
+              <input
+                type="text"
+                id="drev-delete-confirm-text"
+                class="drev-input"
+                placeholder="DELETE"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="characters"
+                spellcheck="false"
+                aria-autocomplete="none"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                oninput="window.DrevalithPublicUI.onDeleteConfirmInput(this.value)"
+              />
             </div>
-            <div style="text-align:right;">
-              <div id="rzp-sim-amount" style="font-size:1.35rem;font-weight:900;color:#fff;">$0.00</div>
-              <div style="font-size:0.7rem;opacity:0.85;">Exact Game Amount</div>
+            <div class="drev-field" id="drev-delete-pass-wrap" style="display:none;">
+              <label for="drev-delete-pass-input">Account Password *</label>
+              <input
+                type="password"
+                id="drev-delete-pass-input"
+                class="drev-input"
+                placeholder="Enter your password to confirm"
+                autocomplete="new-password"
+                autocorrect="off"
+                autocapitalize="none"
+                spellcheck="false"
+                aria-autocomplete="none"
+              />
             </div>
-          </div>
-
-          <div class="drev-field">
-            <label for="rzp-sim-email">Buyer Email *</label>
-            <input type="text" inputmode="email" id="rzp-sim-email" class="drev-input" value="player@drevalithgames.com" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-autocomplete="none" required />
-          </div>
-
-          <label style="display:block;font-size:0.75rem;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);margin-bottom:0.4rem;">
-            Payment Method
-          </label>
-          <div class="rzp-method-grid">
-            <div class="rzp-method-chip active" onclick="window.DrevalithPublicUI.selectSimMethod(this)">💳 Card</div>
-            <div class="rzp-method-chip" onclick="window.DrevalithPublicUI.selectSimMethod(this)">⚡ UPI / QR</div>
-            <div class="rzp-method-chip" onclick="window.DrevalithPublicUI.selectSimMethod(this)">🏦 Netbanking</div>
-          </div>
-
-          <div style="display:grid;gap:0.65rem;margin-top:1.1rem;">
-            <button type="button" id="rzp-sim-pay-btn" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
-              ✅ Complete Payment &amp; Unlock .ZIP
-            </button>
-            <button type="button" id="rzp-sim-fail-btn" class="btn-secondary" style="width:100%;text-align:center;">
-              ✕ Cancel
-            </button>
-          </div>
+            <div style="display:grid;gap:0.65rem;margin-top:1.1rem;">
+              <button
+                type="submit"
+                id="drev-delete-submit-btn"
+                class="btn-primary"
+                disabled
+                style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;background:linear-gradient(135deg,#dc2626 0%,#991b1b 100%);opacity:0.45;"
+              >
+                Delete Account Permanently
+              </button>
+              <button type="button" class="btn-secondary" style="width:100%;text-align:center;" onclick="window.DrevalithPublicUI.closeModals()">
+                Cancel
+              </button>
+            </div>
+          </form>
         </div>
       </div>
 
@@ -1284,6 +1532,10 @@
         const Razorpay = await Store.loadRazorpayCheckoutScript();
         const cfg = window.DREVALITH_CONFIG || {};
 
+        const playerName =
+          (playerAuthState.dbProfile && playerAuthState.dbProfile.name) ||
+          (playerAuthState.user && playerAuthState.user.displayName) ||
+          "";
         const rzpOpts = {
           key: orderData.keyId,
           amount: orderData.amount,
@@ -1291,14 +1543,19 @@
           name: cfg.STUDIO_NAME || "Drevalith Games™",
           description: `${game.title} — Official Full Game (.ZIP)`,
           prefill: {
+            name: playerName,
             email: playerAuthState.user ? playerAuthState.user.email : ""
           },
+          retry: {
+            enabled: true,
+            max_count: 3
+          },
           theme: {
-            color: cfg.THEME_COLOR || "#f23519"
+            color: cfg.THEME_COLOR || "#f23519",
+            backdrop_color: "rgba(4, 6, 12, 0.86)"
           },
           handler: async function (response) {
             try {
-              showToast("Verifying payment & saving to My Purchases...");
               const receipt = await Store.verifyRazorpayPayment({
                 gameId: game.id,
                 gameTitle: game.title,
@@ -1311,6 +1568,10 @@
               });
               renderPublishedGames();
               renderAccountAndPurchasesPage();
+              await showRazorpaySuccessAnimation(
+                Store.formatCurrency(game.price, orderData.currency || game.currency),
+                `${game.title} • Payment ID: ${receipt.paymentId || response.razorpay_payment_id}`
+              );
               openUnlockedModal(
                 game,
                 receipt,
@@ -1349,62 +1610,489 @@
     }
   }
 
-  function openSandboxRazorpayModal(game, orderData) {
-    const modal = document.getElementById("drev-rzp-sandbox-modal");
-    document.getElementById("rzp-sim-title").textContent = game.title;
-    document.getElementById("rzp-sim-amount").textContent = Store.formatCurrency(
-      game.price,
-      orderData.currency || game.currency
-    );
-    if (playerAuthState.user) {
-      document.getElementById("rzp-sim-email").value = playerAuthState.user.email;
+  const RZP_POPULAR_BANKS = [
+    { code: "SBIN", short: "SBI", name: "State Bank of India", color: "#1d4ed8" },
+    { code: "HDFC", short: "HDFC", name: "HDFC Bank", color: "#0f3d91" },
+    { code: "ICIC", short: "ICICI", name: "ICICI Bank", color: "#c2410c" },
+    { code: "UTIB", short: "AXIS", name: "Axis Bank", color: "#9d174d" },
+    { code: "KKBK", short: "KOTAK", name: "Kotak Mahindra Bank", color: "#dc2626" },
+    { code: "BARB", short: "BOB", name: "Bank of Baroda", color: "#ea580c" }
+  ];
+
+  const RZP_OTHER_BANKS = [
+    "Punjab National Bank (PNB)",
+    "Canara Bank",
+    "Union Bank of India",
+    "IndusInd Bank",
+    "IDFC FIRST Bank",
+    "Yes Bank",
+    "Federal Bank",
+    "Indian Bank",
+    "Bank of India",
+    "Central Bank of India",
+    "IDBI Bank",
+    "UCO Bank",
+    "South Indian Bank",
+    "RBL Bank",
+    "Bandhan Bank",
+    "Karnataka Bank",
+    "Karur Vysya Bank",
+    "AU Small Finance Bank",
+    "Standard Chartered Bank",
+    "Citibank",
+    "HSBC",
+    "DBS Bank"
+  ];
+
+  const RZP_WALLETS = [
+    { code: "paytm", name: "Paytm", color: "#0284c7" },
+    { code: "phonepe", name: "PhonePe", color: "#6d28d9" },
+    { code: "amazonpay", name: "Amazon Pay", color: "#d97706" },
+    { code: "mobikwik", name: "MobiKwik", color: "#2563eb" },
+    { code: "freecharge", name: "Freecharge", color: "#ea580c" },
+    { code: "airtel", name: "Airtel Money", color: "#dc2626" }
+  ];
+
+  let rzpState = {
+    game: null,
+    orderData: null,
+    method: "card", // "card" | "upi" | "netbanking" | "wallet"
+    step: "form", // "form" | "otp" | "processing" | "success"
+    cardNumber: "",
+    cardExpiry: "",
+    cardCvv: "",
+    cardName: "",
+    upiId: "",
+    upiQrScanned: false,
+    selectedBank: "",
+    selectedWallet: "",
+    walletPhone: "",
+    otpCode: "",
+    authSummary: "",
+    errorMsg: ""
+  };
+
+  function detectCardNetwork(digits) {
+    if (!digits) return "";
+    if (/^4/.test(digits)) return "VISA";
+    if (/^(5[1-5]|2[2-7])/.test(digits)) return "MASTERCARD";
+    if (/^(60|65|81|82|508)/.test(digits)) return "RUPAY";
+    if (/^3[47]/.test(digits)) return "AMEX";
+    return "CARD";
+  }
+
+  function passesLuhnCheck(digits) {
+    if (!/^\d{13,19}$/.test(digits)) return false;
+    let sum = 0;
+    let dbl = false;
+    for (let i = digits.length - 1; i >= 0; i--) {
+      let n = parseInt(digits[i], 10);
+      if (dbl) {
+        n *= 2;
+        if (n > 9) n -= 9;
+      }
+      sum += n;
+      dbl = !dbl;
+    }
+    return sum % 10 === 0;
+  }
+
+  function showRazorpaySuccessAnimation(amountText, metaText) {
+    return new Promise((resolve) => {
+      const m = document.getElementById("drev-rzp-success-modal");
+      const amtEl = document.getElementById("drev-rzp-success-amt");
+      const metaEl = document.getElementById("drev-rzp-success-meta");
+      if (!m) {
+        resolve();
+        return;
+      }
+      if (amtEl) amtEl.textContent = amountText;
+      if (metaEl) metaEl.textContent = metaText;
+      m.classList.add("open");
+      setTimeout(() => {
+        m.classList.remove("open");
+        resolve();
+      }, 1750);
+    });
+  }
+
+  function renderRazorpayInteractiveModal() {
+    const box = document.getElementById("drev-rzp-checkout-box");
+    if (!box || !rzpState.game) return;
+    const game = rzpState.game;
+    const orderData = rzpState.orderData || {};
+    const fmtAmount = Store.formatCurrency(game.price, orderData.currency || game.currency);
+    const buyerEmail =
+      (playerAuthState.user && playerAuthState.user.email) || "player@drevalithgames.com";
+
+    const headerHtml = `
+      <div class="rzp-top-banner">
+        <div style="display:flex;align-items:center;gap:0.75rem;min-width:0;">
+          <div class="rzp-merchant-badge">DG</div>
+          <div style="min-width:0;">
+            <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
+              <span style="font-size:0.96rem;font-weight:900;letter-spacing:0.01em;">Drevalith Games™</span>
+              <span style="font-size:0.63rem;font-weight:800;padding:0.12rem 0.42rem;border-radius:4px;background:rgba(255,255,255,0.22);text-transform:uppercase;">Test Mode</span>
+            </div>
+            <div style="font-size:0.76rem;opacity:0.92;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+              ${esc(game.title)}
+            </div>
+          </div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          <div style="font-size:1.22rem;font-weight:900;">${esc(fmtAmount)}</div>
+          <button type="button" onclick="window.DrevalithPublicUI.rzpCancel()" style="background:none;border:none;color:rgba(255,255,255,0.88);font-size:0.72rem;cursor:pointer;padding:0;text-decoration:underline;">
+            Cancel ✕
+          </button>
+        </div>
+      </div>
+      <div class="rzp-contact-strip">
+        <span>👤 ${esc(buyerEmail)}</span>
+        <span style="color:#16a34a;font-weight:700;">✔ Razorpay Trusted</span>
+      </div>
+    `;
+
+    // STEP: PROCESSING SPINNER
+    if (rzpState.step === "processing") {
+      box.innerHTML = `
+        ${headerHtml}
+        <div class="rzp-body-area" style="padding:2.6rem 1.5rem;text-align:center;">
+          <div class="rzp-spinner"></div>
+          <div style="font-size:1.05rem;font-weight:800;color:#0f172a;margin-bottom:0.3rem;">
+            Processing Payment...
+          </div>
+          <div style="font-size:0.82rem;color:#64748b;">
+            Verifying ${esc(rzpState.authSummary || "transaction")} with bank • Do not close this window
+          </div>
+        </div>
+        <div class="rzp-footer-trust">
+          <span>🔒 256-Bit PCI-DSS Encrypted</span>
+          <strong>Secured by Razorpay</strong>
+        </div>
+      `;
+      return;
     }
 
-    const payBtn = document.getElementById("rzp-sim-pay-btn");
-    const failBtn = document.getElementById("rzp-sim-fail-btn");
-    payBtn.textContent = `✅ Pay ${Store.formatCurrency(
-      game.price,
-      orderData.currency || game.currency
-    )} & Unlock .ZIP`;
+    // STEP: PAYMENT SUCCESS ANIMATION INSIDE RAZORPAY WINDOW
+    if (rzpState.step === "success") {
+      box.innerHTML = `
+        ${headerHtml}
+        <div class="rzp-body-area" style="padding:2.35rem 1.5rem;text-align:center;">
+          <div class="rzp-success-badge">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none">
+              <path d="M5 13l4.5 4.5L19 7" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div style="font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:#16a34a;margin-bottom:0.2rem;">
+            Transaction Approved
+          </div>
+          <div style="font-size:1.35rem;font-weight:900;color:#0f172a;margin-bottom:0.25rem;">
+            Payment Successful!
+          </div>
+          <div style="font-size:1.45rem;font-weight:900;color:#16a34a;margin-bottom:0.35rem;">
+            ${esc(fmtAmount)}
+          </div>
+          <div style="font-size:0.8rem;color:#64748b;">
+            ${esc(rzpState.authSummary)} • Redirecting to My Purchases...
+          </div>
+        </div>
+        <div class="rzp-footer-trust">
+          <span>✔ Verified Receipt Generated</span>
+          <strong>Secured by Razorpay</strong>
+        </div>
+      `;
+      return;
+    }
 
-    payBtn.onclick = async () => {
-      const buyerEmail = document.getElementById("rzp-sim-email").value.trim();
-      payBtn.disabled = true;
-      payBtn.textContent = "Verifying Payment...";
-      try {
-        const fakePayId = `pay_test_${Math.random().toString(36).slice(2, 12)}`;
-        const receipt = await Store.verifyRazorpayPayment({
-          gameId: game.id,
-          gameTitle: game.title,
-          amountPaid: game.price,
-          currency: orderData.currency || game.currency,
-          razorpay_order_id: orderData.orderId,
-          razorpay_payment_id: fakePayId,
-          razorpay_signature: "sandbox_verified",
-          buyerEmail,
-          sandboxSimulated: true
-        });
-        closeModals();
-        renderPublishedGames();
-        renderAccountAndPurchasesPage();
-        openUnlockedModal(
-          game,
-          receipt,
-          "Payment Successful — Saved to My Purchases!",
-          `Verified ${Store.formatCurrency(game.price, game.currency)} payment for ${game.title}. Click below to download!`
-        );
-      } catch (e) {
-        showToast(`❌ ${e.message}`);
-      } finally {
-        payBtn.disabled = false;
-      }
+    // STEP: BANK 3DS / NETBANKING / UPI AUTHORIZATION SCREEN
+    if (rzpState.step === "otp") {
+      const isUpiCollect = rzpState.method === "upi";
+      box.innerHTML = `
+        ${headerHtml}
+        <div class="rzp-body-area">
+          <div style="padding:0.75rem 0.9rem;border-radius:9px;background:#f8fafc;border:1px solid #e2e8f0;margin-bottom:0.95rem;display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;color:#64748b;">Payment Method</div>
+              <div style="font-size:0.88rem;font-weight:800;color:#0f172a;">${esc(rzpState.authSummary)}</div>
+            </div>
+            <button type="button" onclick="window.DrevalithPublicUI.rzpBackToForm()" style="background:none;border:none;color:#2563eb;font-size:0.76rem;font-weight:700;cursor:pointer;">
+              Change
+            </button>
+          </div>
+
+          <div class="rzp-error-box ${rzpState.errorMsg ? "show" : ""}">${esc(rzpState.errorMsg)}</div>
+
+          ${
+            isUpiCollect
+              ? `
+              <div style="text-align:center;padding:0.9rem 0.5rem 1.15rem 0.5rem;">
+                <div style="font-size:0.95rem;font-weight:800;color:#0f172a;margin-bottom:0.35rem;">
+                  Approve Collect Request of ${esc(fmtAmount)}
+                </div>
+                <p style="font-size:0.81rem;color:#64748b;margin-bottom:1.1rem;">
+                  A payment request was sent to <strong>${esc(rzpState.upiQrScanned ? "Scanned UPI QR App" : rzpState.upiId)}</strong>. Confirm below in Test Mode to simulate UPI PIN approval.
+                </p>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;">
+                  <button type="button" class="rzp-pay-cta" style="background:linear-gradient(135deg,#16a34a 0%,#15803d 100%);" onclick="window.DrevalithPublicUI.rzpApproveOtp(true)">
+                    ✔ Approve Payment
+                  </button>
+                  <button type="button" class="rzp-pay-cta" style="background:#ef4444;box-shadow:none;" onclick="window.DrevalithPublicUI.rzpApproveOtp(false)">
+                    ✕ Decline
+                  </button>
+                </div>
+              </div>
+            `
+              : `
+              <div style="margin-bottom:0.95rem;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem;">
+                  <label class="rzp-light-label" for="rzp-otp-input" style="margin:0;">Bank 6-Digit OTP *</label>
+                  <span style="font-size:0.72rem;color:#2563eb;font-weight:700;cursor:pointer;" onclick="window.DrevalithPublicUI.rzpFillTestOtp()">
+                    Test OTP: 123456 (Click to fill)
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  inputmode="numeric"
+                  maxlength="6"
+                  id="rzp-otp-input"
+                  class="rzp-light-input"
+                  style="text-align:center;font-size:1.18rem;font-weight:800;letter-spacing:0.32em;"
+                  placeholder="••••••"
+                  value="${esc(rzpState.otpCode)}"
+                  autocomplete="off"
+                  oninput="window.DrevalithPublicUI.rzpUpdateField('otpCode', this.value)"
+                />
+              </div>
+              <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:0.6rem;">
+                <button type="button" class="rzp-pay-cta" onclick="window.DrevalithPublicUI.rzpApproveOtp(true)">
+                  Verify &amp; Pay ${esc(fmtAmount)}
+                </button>
+                <button type="button" class="rzp-pay-cta" style="background:#f1f5f9;color:#dc2626;box-shadow:none;border:1px solid #fecaca;" onclick="window.DrevalithPublicUI.rzpApproveOtp(false)">
+                  Fail (Test)
+                </button>
+              </div>
+            `
+          }
+        </div>
+        <div class="rzp-footer-trust">
+          <span>🔒 Bank 3D-Secure Verification</span>
+          <strong>Secured by Razorpay</strong>
+        </div>
+      `;
+      return;
+    }
+
+    // STEP: PAYMENT METHOD DETAILS FORM ("card" | "upi" | "netbanking" | "wallet")
+    const digitsOnly = rzpState.cardNumber.replace(/\D/g, "");
+    const cardBrand = detectCardNetwork(digitsOnly);
+
+    let methodBodyHtml = "";
+    if (rzpState.method === "card") {
+      methodBodyHtml = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.65rem;">
+          <span style="font-size:0.8rem;font-weight:800;color:#0f172a;">Add Credit / Debit Card</span>
+          <button type="button" onclick="window.DrevalithPublicUI.rzpFillTestCard()" style="border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:6px;padding:0.2rem 0.5rem;font-size:0.7rem;font-weight:700;cursor:pointer;">
+            Fill Test Card
+          </button>
+        </div>
+        <div style="margin-bottom:0.75rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <label class="rzp-light-label" for="rzp-card-num">Card Number *</label>
+            ${cardBrand ? `<span style="font-size:0.68rem;font-weight:900;color:#1d4ed8;background:#dbeafe;padding:0.1rem 0.42rem;border-radius:4px;">${esc(cardBrand)}</span>` : `<span style="font-size:0.68rem;color:#64748b;">VISA • MC • RuPay</span>`}
+          </div>
+          <input
+            type="text"
+            inputmode="numeric"
+            id="rzp-card-num"
+            maxlength="19"
+            class="rzp-light-input"
+            placeholder="0000 0000 0000 0000"
+            value="${esc(rzpState.cardNumber)}"
+            autocomplete="off"
+            oninput="window.DrevalithPublicUI.rzpFormatCard(this)"
+          />
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.7rem;margin-bottom:0.75rem;">
+          <div>
+            <label class="rzp-light-label" for="rzp-card-exp">Expiry (MM/YY) *</label>
+            <input
+              type="text"
+              inputmode="numeric"
+              id="rzp-card-exp"
+              maxlength="5"
+              class="rzp-light-input"
+              placeholder="MM / YY"
+              value="${esc(rzpState.cardExpiry)}"
+              autocomplete="off"
+              oninput="window.DrevalithPublicUI.rzpFormatExpiry(this)"
+            />
+          </div>
+          <div>
+            <label class="rzp-light-label" for="rzp-card-cvv">CVV *</label>
+            <input
+              type="password"
+              inputmode="numeric"
+              id="rzp-card-cvv"
+              maxlength="4"
+              class="rzp-light-input"
+              placeholder="•••"
+              value="${esc(rzpState.cardCvv)}"
+              autocomplete="new-password"
+              oninput="window.DrevalithPublicUI.rzpFormatCvv(this)"
+            />
+          </div>
+        </div>
+        <div style="margin-bottom:0.95rem;">
+          <label class="rzp-light-label" for="rzp-card-name">Cardholder Name *</label>
+          <input
+            type="text"
+            id="rzp-card-name"
+            class="rzp-light-input"
+            placeholder="Name on card"
+            value="${esc(rzpState.cardName)}"
+            autocomplete="off"
+            oninput="window.DrevalithPublicUI.rzpUpdateField('cardName', this.value)"
+          />
+        </div>
+      `;
+    } else if (rzpState.method === "upi") {
+      methodBodyHtml = `
+        <div style="display:grid;grid-template-columns:116px 1fr;gap:0.9rem;align-items:center;padding:0.75rem;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;margin-bottom:0.85rem;">
+          <div style="background:#fff;padding:0.4rem;border-radius:8px;border:1px solid #cbd5e1;text-align:center;">
+            <svg width="96" height="96" viewBox="0 0 21 21" shape-rendering="crispEdges">
+              <rect width="21" height="21" fill="#fff"/>
+              <path fill="#0f172a" d="M1 1h7v7H1zM2 2v5h5V2zM3 3h3v3H3zM13 1h7v7h-7zM14 2v5h5V2zM15 3h3v3h-3zM1 13h7v7H1zM2 14v5h5v-5zM3 15h3v3H3zM9 1h2v2H9zM9 5h3v2H9zM1 9h3v2H1zM6 9h5v2H6zM13 9h2v3h-2zM17 9h3v2h-3zM9 13h3v2H9zM14 13h4v2h-4zM9 17h2v3H9zM13 17h3v3h-3zM18 16h2v4h-2z"/>
+            </svg>
+          </div>
+          <div>
+            <div style="font-size:0.82rem;font-weight:800;color:#0f172a;margin-bottom:0.2rem;">Scan UPI QR</div>
+            <div style="font-size:0.73rem;color:#64748b;margin-bottom:0.5rem;">GPay • PhonePe • Paytm • BHIM</div>
+            <button type="button" onclick="window.DrevalithPublicUI.rzpScanTestQr()" style="padding:0.38rem 0.68rem;border-radius:6px;border:1px solid ${rzpState.upiQrScanned ? "#16a34a" : "#2563eb"};background:${rzpState.upiQrScanned ? "#dcfce7" : "#eff6ff"};color:${rzpState.upiQrScanned ? "#15803d" : "#1d4ed8"};font-size:0.73rem;font-weight:800;cursor:pointer;">
+              ${rzpState.upiQrScanned ? "✔ QR Scanned Ready" : "Simulate QR Scan"}
+            </button>
+          </div>
+        </div>
+        <div style="margin-bottom:0.95rem;">
+          <label class="rzp-light-label" for="rzp-upi-id">Or Pay With UPI ID / VPA *</label>
+          <input
+            type="text"
+            id="rzp-upi-id"
+            class="rzp-light-input"
+            placeholder="yourname@okaxis / @ybl / @paytm"
+            value="${esc(rzpState.upiId)}"
+            autocomplete="off"
+            oninput="window.DrevalithPublicUI.rzpUpdateField('upiId', this.value)"
+          />
+        </div>
+      `;
+    } else if (rzpState.method === "netbanking") {
+      const bankCards = RZP_POPULAR_BANKS.map(
+        (b) => `
+          <div class="rzp-bank-card ${rzpState.selectedBank === b.name ? "selected" : ""}" onclick="window.DrevalithPublicUI.rzpPickBank('${esc(b.name)}')">
+            <div class="rzp-bank-icon" style="background:${b.color};">${esc(b.short)}</div>
+            <div style="font-size:0.73rem;font-weight:800;color:#0f172a;line-height:1.2;">${esc(b.short)}</div>
+            <div style="font-size:0.63rem;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(b.name)}</div>
+          </div>
+        `
+      ).join("");
+      const allOptions = [
+        `<option value="">-- Select from All Banks --</option>`,
+        ...RZP_POPULAR_BANKS.map(
+          (b) =>
+            `<option value="${esc(b.name)}" ${rzpState.selectedBank === b.name ? "selected" : ""}>${esc(b.name)}</option>`
+        ),
+        ...RZP_OTHER_BANKS.map(
+          (name) =>
+            `<option value="${esc(name)}" ${rzpState.selectedBank === name ? "selected" : ""}>${esc(name)}</option>`
+        )
+      ].join("");
+
+      methodBodyHtml = `
+        <label class="rzp-light-label">Popular Banks</label>
+        <div class="rzp-bank-grid">${bankCards}</div>
+        <div style="margin-bottom:0.95rem;">
+          <label class="rzp-light-label" for="rzp-bank-select">All Indian &amp; Major Banks *</label>
+          <select id="rzp-bank-select" class="rzp-light-select" onchange="window.DrevalithPublicUI.rzpPickBank(this.value)">
+            ${allOptions}
+          </select>
+        </div>
+      `;
+    } else if (rzpState.method === "wallet") {
+      const walletCards = RZP_WALLETS.map(
+        (w) => `
+          <div class="rzp-bank-card ${rzpState.selectedWallet === w.name ? "selected" : ""}" onclick="window.DrevalithPublicUI.rzpPickWallet('${esc(w.name)}')">
+            <div class="rzp-bank-icon" style="background:${w.color};">${esc(w.name.slice(0, 2).toUpperCase())}</div>
+            <div style="font-size:0.74rem;font-weight:800;color:#0f172a;">${esc(w.name)}</div>
+          </div>
+        `
+      ).join("");
+      methodBodyHtml = `
+        <label class="rzp-light-label">Select Wallet *</label>
+        <div class="rzp-bank-grid">${walletCards}</div>
+        <div style="margin-bottom:0.95rem;">
+          <label class="rzp-light-label" for="rzp-wallet-phone">Linked Mobile Number (10 Digits) *</label>
+          <input
+            type="text"
+            inputmode="numeric"
+            maxlength="10"
+            id="rzp-wallet-phone"
+            class="rzp-light-input"
+            placeholder="9876543210"
+            value="${esc(rzpState.walletPhone)}"
+            autocomplete="off"
+            oninput="window.DrevalithPublicUI.rzpFormatPhone(this)"
+          />
+        </div>
+      `;
+    }
+
+    box.innerHTML = `
+      ${headerHtml}
+      <div class="rzp-tabs-nav">
+        <button type="button" class="rzp-tab-btn ${rzpState.method === "card" ? "active" : ""}" onclick="window.DrevalithPublicUI.rzpSwitchTab('card')">💳 Card</button>
+        <button type="button" class="rzp-tab-btn ${rzpState.method === "upi" ? "active" : ""}" onclick="window.DrevalithPublicUI.rzpSwitchTab('upi')">⚡ UPI / QR</button>
+        <button type="button" class="rzp-tab-btn ${rzpState.method === "netbanking" ? "active" : ""}" onclick="window.DrevalithPublicUI.rzpSwitchTab('netbanking')">🏦 Netbanking</button>
+        <button type="button" class="rzp-tab-btn ${rzpState.method === "wallet" ? "active" : ""}" onclick="window.DrevalithPublicUI.rzpSwitchTab('wallet')">👛 Wallet</button>
+      </div>
+      <div class="rzp-body-area">
+        <div class="rzp-error-box ${rzpState.errorMsg ? "show" : ""}">${esc(rzpState.errorMsg)}</div>
+        ${methodBodyHtml}
+        <button type="button" id="rzp-sim-pay-btn" class="rzp-pay-cta" onclick="window.DrevalithPublicUI.rzpProceedToAuth()">
+          Pay ${esc(fmtAmount)} Now
+        </button>
+      </div>
+      <div class="rzp-footer-trust">
+        <span>🔒 PCI-DSS • 3D-Secure 2.0</span>
+        <strong>Secured by Razorpay</strong>
+      </div>
+    `;
+  }
+
+  function openSandboxRazorpayModal(game, orderData) {
+    const modal = document.getElementById("drev-rzp-sandbox-modal");
+    const defaultName =
+      (playerAuthState.dbProfile && playerAuthState.dbProfile.name) ||
+      (playerAuthState.user && playerAuthState.user.displayName) ||
+      "";
+    rzpState = {
+      game,
+      orderData,
+      method: "card",
+      step: "form",
+      cardNumber: "",
+      cardExpiry: "",
+      cardCvv: "",
+      cardName: defaultName,
+      upiId: "",
+      upiQrScanned: false,
+      selectedBank: "",
+      selectedWallet: "",
+      walletPhone: "",
+      otpCode: "",
+      authSummary: "",
+      errorMsg: ""
     };
-
-    failBtn.onclick = () => {
-      closeModals();
-      showToast("🔒 Payment cancelled.");
-    };
-
+    renderRazorpayInteractiveModal();
     modal.classList.add("open");
   }
 
@@ -1641,9 +2329,309 @@
     openKey: openKeyModal,
     closeModals,
     tab: switchDynamicTab,
-    selectSimMethod(chip) {
-      document.querySelectorAll(".rzp-method-chip").forEach((c) => c.classList.remove("active"));
-      chip.classList.add("active");
+    rzpSwitchTab(method) {
+      rzpState.method = method;
+      rzpState.step = "form";
+      rzpState.errorMsg = "";
+      renderRazorpayInteractiveModal();
+    },
+    rzpUpdateField(field, val) {
+      rzpState[field] = val;
+      if (field === "upiId" && val.trim()) rzpState.upiQrScanned = false;
+    },
+    rzpFormatCard(inp) {
+      const digits = String(inp.value || "").replace(/\D/g, "").slice(0, 16);
+      const formatted = (digits.match(/.{1,4}/g) || []).join(" ");
+      inp.value = formatted;
+      rzpState.cardNumber = formatted;
+    },
+    rzpFormatExpiry(inp) {
+      const digits = String(inp.value || "").replace(/\D/g, "").slice(0, 4);
+      const formatted = digits.length > 2 ? `${digits.slice(0, 2)}/${digits.slice(2)}` : digits;
+      inp.value = formatted;
+      rzpState.cardExpiry = formatted;
+    },
+    rzpFormatCvv(inp) {
+      const digits = String(inp.value || "").replace(/\D/g, "").slice(0, 4);
+      inp.value = digits;
+      rzpState.cardCvv = digits;
+    },
+    rzpFormatPhone(inp) {
+      const digits = String(inp.value || "").replace(/\D/g, "").slice(0, 10);
+      inp.value = digits;
+      rzpState.walletPhone = digits;
+    },
+    rzpFillTestCard() {
+      rzpState.cardNumber = "4111 1111 1111 1111";
+      rzpState.cardExpiry = "12/29";
+      rzpState.cardCvv = "123";
+      if (!rzpState.cardName) {
+        rzpState.cardName =
+          (playerAuthState.dbProfile && playerAuthState.dbProfile.name) || "Test Buyer";
+      }
+      rzpState.errorMsg = "";
+      renderRazorpayInteractiveModal();
+    },
+    rzpPickBank(bankName) {
+      rzpState.selectedBank = String(bankName || "").trim();
+      rzpState.errorMsg = "";
+      renderRazorpayInteractiveModal();
+    },
+    rzpPickWallet(walletName) {
+      rzpState.selectedWallet = String(walletName || "").trim();
+      rzpState.errorMsg = "";
+      renderRazorpayInteractiveModal();
+    },
+    rzpScanTestQr() {
+      rzpState.upiQrScanned = true;
+      rzpState.upiId = "";
+      rzpState.errorMsg = "";
+      renderRazorpayInteractiveModal();
+    },
+    rzpFillTestOtp() {
+      rzpState.otpCode = "123456";
+      rzpState.errorMsg = "";
+      renderRazorpayInteractiveModal();
+    },
+    rzpBackToForm() {
+      rzpState.step = "form";
+      rzpState.errorMsg = "";
+      renderRazorpayInteractiveModal();
+    },
+    rzpCancel() {
+      closeModals();
+      showToast("Payment cancelled.");
+    },
+    rzpProceedToAuth() {
+      rzpState.errorMsg = "";
+      if (rzpState.method === "card") {
+        const digits = rzpState.cardNumber.replace(/\D/g, "");
+        if (!passesLuhnCheck(digits)) {
+          rzpState.errorMsg = "Please enter a valid 16-digit card number.";
+          renderRazorpayInteractiveModal();
+          return;
+        }
+        const expMatch = rzpState.cardExpiry.match(/^(\d{2})\/(\d{2})$/);
+        if (!expMatch) {
+          rzpState.errorMsg = "Please enter card expiry in MM/YY format.";
+          renderRazorpayInteractiveModal();
+          return;
+        }
+        const mm = parseInt(expMatch[1], 10);
+        const yy = 2000 + parseInt(expMatch[2], 10);
+        const now = new Date();
+        const curY = now.getFullYear();
+        const curM = now.getMonth() + 1;
+        if (mm < 1 || mm > 12 || yy < curY || (yy === curY && mm < curM)) {
+          rzpState.errorMsg = "Card expiry date is invalid or expired.";
+          renderRazorpayInteractiveModal();
+          return;
+        }
+        if (!/^\d{3,4}$/.test(rzpState.cardCvv)) {
+          rzpState.errorMsg = "Please enter a valid 3 or 4 digit CVV.";
+          renderRazorpayInteractiveModal();
+          return;
+        }
+        if (!rzpState.cardName || rzpState.cardName.trim().length < 2) {
+          rzpState.errorMsg = "Please enter the cardholder name.";
+          renderRazorpayInteractiveModal();
+          return;
+        }
+        const brand = detectCardNetwork(digits) || "CARD";
+        rzpState.authSummary = `${brand} •••• ${digits.slice(-4)}`;
+      } else if (rzpState.method === "upi") {
+        const vpa = rzpState.upiId.trim();
+        if (!rzpState.upiQrScanned && !/^[\w.-]{2,}@[a-zA-Z]{2,}$/.test(vpa)) {
+          rzpState.errorMsg = "Please enter a valid UPI ID (e.g. name@okaxis) or scan the UPI QR.";
+          renderRazorpayInteractiveModal();
+          return;
+        }
+        rzpState.authSummary = rzpState.upiQrScanned ? "UPI QR Scan" : `UPI (${vpa})`;
+      } else if (rzpState.method === "netbanking") {
+        if (!rzpState.selectedBank) {
+          rzpState.errorMsg = "Please select your bank to proceed with Netbanking.";
+          renderRazorpayInteractiveModal();
+          return;
+        }
+        rzpState.authSummary = `${rzpState.selectedBank} NetBanking`;
+      } else if (rzpState.method === "wallet") {
+        if (!rzpState.selectedWallet) {
+          rzpState.errorMsg = "Please select a wallet to proceed.";
+          renderRazorpayInteractiveModal();
+          return;
+        }
+        if (!/^\d{10}$/.test(rzpState.walletPhone)) {
+          rzpState.errorMsg = "Please enter a valid 10-digit mobile number.";
+          renderRazorpayInteractiveModal();
+          return;
+        }
+        rzpState.authSummary = `${rzpState.selectedWallet} (${rzpState.walletPhone})`;
+      }
+      rzpState.otpCode = "";
+      rzpState.step = "otp";
+      renderRazorpayInteractiveModal();
+    },
+    async rzpApproveOtp(approved) {
+      if (!approved) {
+        rzpState.step = "form";
+        rzpState.errorMsg = "Payment was declined by bank / user. You may try again.";
+        renderRazorpayInteractiveModal();
+        return;
+      }
+      if (rzpState.method !== "upi") {
+        const otp = String(rzpState.otpCode || "").replace(/\D/g, "");
+        if (otp.length !== 6) {
+          rzpState.errorMsg = "Please enter the 6-digit OTP to verify payment.";
+          renderRazorpayInteractiveModal();
+          return;
+        }
+      }
+
+      const { game, orderData } = rzpState;
+      if (!game) return;
+      rzpState.errorMsg = "";
+      rzpState.step = "processing";
+      renderRazorpayInteractiveModal();
+
+      await new Promise((r) => setTimeout(r, 850));
+
+      try {
+        const buyerEmail =
+          (playerAuthState.user && playerAuthState.user.email) || "player@drevalithgames.com";
+        const fakePayId = `pay_test_${Math.random().toString(36).slice(2, 12)}`;
+        const receipt = await Store.verifyRazorpayPayment({
+          gameId: game.id,
+          gameTitle: game.title,
+          amountPaid: game.price,
+          currency: (orderData && orderData.currency) || game.currency,
+          razorpay_order_id: orderData ? orderData.orderId : "",
+          razorpay_payment_id: fakePayId,
+          razorpay_signature: "sandbox_verified",
+          buyerEmail,
+          mode: "sandbox_preview",
+          sandboxSimulated: true
+        });
+        rzpState.authSummary = `Payment ID: ${receipt.paymentId || fakePayId}`;
+        rzpState.step = "success";
+        renderRazorpayInteractiveModal();
+
+        await new Promise((r) => setTimeout(r, 1650));
+
+        closeModals();
+        renderPublishedGames();
+        renderAccountAndPurchasesPage();
+        openUnlockedModal(
+          game,
+          receipt,
+          "Payment Successful — Saved to My Purchases!",
+          `Verified ${Store.formatCurrency(game.price, game.currency)} payment for ${game.title}. Click below to download!`
+        );
+      } catch (err) {
+        rzpState.step = "form";
+        rzpState.errorMsg = err.message || "Payment verification failed.";
+        renderRazorpayInteractiveModal();
+      }
+    },
+    openDeleteAccountModal() {
+      const m = document.getElementById("drev-delete-account-modal");
+      const inp = document.getElementById("drev-delete-confirm-text");
+      const passWrap = document.getElementById("drev-delete-pass-wrap");
+      const passInp = document.getElementById("drev-delete-pass-input");
+      const alertEl = document.getElementById("drev-delete-acc-alert");
+      const btn = document.getElementById("drev-delete-submit-btn");
+      if (!m) return;
+      if (inp) inp.value = "";
+      if (passInp) passInp.value = "";
+      if (passWrap) passWrap.style.display = "none";
+      if (alertEl) {
+        alertEl.className = "drev-alert";
+        alertEl.textContent = "";
+      }
+      if (btn) {
+        btn.disabled = true;
+        btn.style.opacity = "0.45";
+        btn.textContent = "Delete Account Permanently";
+      }
+      m.classList.add("open");
+      setTimeout(() => {
+        if (inp && typeof inp.focus === "function") inp.focus();
+      }, 50);
+    },
+    onDeleteConfirmInput(val) {
+      const btn = document.getElementById("drev-delete-submit-btn");
+      if (!btn) return;
+      const matched = String(val || "").trim().toUpperCase() === "DELETE";
+      btn.disabled = !matched;
+      btn.style.opacity = matched ? "1" : "0.45";
+    },
+    async submitDeleteAccount(e) {
+      e.preventDefault();
+      const inp = document.getElementById("drev-delete-confirm-text");
+      const passWrap = document.getElementById("drev-delete-pass-wrap");
+      const passInp = document.getElementById("drev-delete-pass-input");
+      const alertEl = document.getElementById("drev-delete-acc-alert");
+      const btn = document.getElementById("drev-delete-submit-btn");
+
+      const confirmVal = inp ? inp.value.trim() : "";
+      if (confirmVal.toUpperCase() !== "DELETE") {
+        if (alertEl) {
+          alertEl.className = "drev-alert error";
+          alertEl.textContent = 'Please type "DELETE" to confirm account deletion.';
+        }
+        return;
+      }
+
+      const password = passInp ? passInp.value : "";
+      if (passWrap && passWrap.style.display !== "none" && !password) {
+        if (alertEl) {
+          alertEl.className = "drev-alert error";
+          alertEl.textContent = "Please enter your password to confirm permanent deletion.";
+        }
+        return;
+      }
+
+      if (alertEl) alertEl.className = "drev-alert";
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Deleting Account...";
+      }
+
+      try {
+        await Store.deletePlayerAccount({ confirmationText: confirmVal, password });
+        closeModals();
+        clearAuthFormInputs();
+        wasWaitingForEmailVerify = false;
+        activeAuthTab = "login";
+        renderAccountAndPurchasesPage(true);
+        renderPublishedGames();
+        showToast("Your account has been permanently deleted.");
+      } catch (err) {
+        if (err && err.code === "REQUIRES_PASSWORD") {
+          if (passWrap) passWrap.style.display = "block";
+          if (alertEl) {
+            alertEl.className = "drev-alert info";
+            alertEl.textContent = err.message || "Enter your password below to confirm account deletion.";
+          }
+          if (btn) {
+            btn.disabled = false;
+            btn.style.opacity = "1";
+            btn.textContent = "Confirm Password & Delete Account";
+          }
+          setTimeout(() => {
+            if (passInp && typeof passInp.focus === "function") passInp.focus();
+          }, 40);
+          return;
+        }
+        if (alertEl) {
+          alertEl.className = "drev-alert error";
+          alertEl.textContent = err.message || "Could not delete account.";
+        }
+        if (btn) {
+          btn.disabled = false;
+          btn.style.opacity = "1";
+          btn.textContent = "Delete Account Permanently";
+        }
+      }
     },
     switchAuthTab(tab) {
       clearAuthFormInputs();
