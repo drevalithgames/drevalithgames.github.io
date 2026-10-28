@@ -1211,8 +1211,15 @@
           .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       };
 
+      let lastEmittedSig = "";
       const emit = () => {
         latestPublicGamesCache = latestGames;
+        let nextSig = "";
+        try {
+          nextSig = JSON.stringify({ g: latestGames, s: latestSettings });
+        } catch (_) {}
+        if (nextSig && nextSig === lastEmittedSig) return;
+        lastEmittedSig = nextSig;
         onChange({
           mode: "firebase_rtdb",
           settings: latestSettings,

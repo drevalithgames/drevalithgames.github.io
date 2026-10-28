@@ -32,6 +32,7 @@
   let pendingCheckoutGameId = "";
   let pendingKeyGameId = "";
   let authFormRenderNonce = 0;
+  let mountedAuthModeKey = "";
   let wasWaitingForEmailVerify = false;
   let editingProfileNameInline = false;
   let verifyCooldownTicker = null;
@@ -432,6 +433,14 @@
         font-size: 0.96rem;
         font-family: inherit;
         outline: none;
+      }
+      .drev-input:-webkit-autofill,
+      .drev-input:-webkit-autofill:hover,
+      .drev-input:-webkit-autofill:focus {
+        -webkit-text-fill-color: #ffffff;
+        -webkit-box-shadow: 0 0 0px 1000px #070a11 inset;
+        transition: background-color 9999s ease-out 0s;
+      }
         transition: border-color 0.2s ease, box-shadow 0.2s ease;
       }
       .drev-input:focus {
@@ -564,6 +573,7 @@
         const accountPage = document.getElementById("page-account");
         const navBtn = document.getElementById("drev-nav-account-btn");
         if (target === "account" || target === "purchases") {
+          const wasAlreadyOnAccount = Boolean(accountPage && accountPage.classList.contains("active"));
           document.querySelectorAll(".page-view").forEach((el) => {
             el.classList.toggle("active", el.id === "page-account");
           });
@@ -574,17 +584,18 @@
           if (pushHash) history.replaceState(null, "", "#account");
           if (playerAuthState.user && typeof Store.fetchPlayerProfileFromDb === "function") {
             Store.fetchPlayerProfileFromDb().catch(() => {});
+            renderAccountAndPurchasesPage(false);
+          } else if (!wasAlreadyOnAccount) {
+            renderAccountAndPurchasesPage(true);
           } else {
-            authFormRenderNonce += 1;
-          }
-          renderAccountAndPurchasesPage();
-          if (!playerAuthState.user) {
-            clearAuthFormInputs();
-            setTimeout(clearAuthFormInputs, 0);
+            renderAccountAndPurchasesPage(false);
           }
           return;
         }
-        if (!playerAuthState.user) clearAuthFormInputs();
+        if (!playerAuthState.user) {
+          mountedAuthModeKey = "";
+          clearAuthFormInputs();
+        }
         if (accountPage) accountPage.classList.remove("active");
         if (navBtn) navBtn.classList.remove("active");
         origSwitch(target, pushHash);
@@ -643,13 +654,14 @@
     }
   }
 
-  function renderAccountAndPurchasesPage() {
+  function renderAccountAndPurchasesPage(forceReset = false) {
     const mount = document.getElementById("drev-account-mount");
     if (!mount) return;
     updateNavbarAccountLabel();
 
     // STATE A: SIGNED IN TO VERIFIED PLAYER ACCOUNT -> SHOW DB PROFILE + PURCHASES & UPDATES!
     if (playerAuthState.user) {
+      mountedAuthModeKey = "profile";
       const u = playerAuthState.user;
       const dbProf = playerAuthState.dbProfile || {};
       const profileName = dbProf.name || dbProf.displayName || u.displayName || "Player";
@@ -767,8 +779,8 @@
                   <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Name</span>
                   ${
                     editingProfileNameInline
-                      ? `<form onsubmit="window.DrevalithPublicUI.saveProfileNameInline(event)" style="display:flex;gap:0.45rem;align-items:center;margin-top:0.2rem;">
-                           <input type="text" id="drev-inline-name-input" class="drev-input" style="padding:0.42rem 0.65rem;font-size:0.88rem;" value="${esc(profileName)}" required />
+                      ? `<form autocomplete="off" onsubmit="window.DrevalithPublicUI.saveProfileNameInline(event)" style="display:flex;gap:0.45rem;align-items:center;margin-top:0.2rem;">
+                           <input type="text" id="drev-inline-name-input" class="drev-input" style="padding:0.42rem 0.65rem;font-size:0.88rem;" value="${esc(profileName)}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-autocomplete="none" required />
                            <button type="submit" class="btn-primary" style="padding:0.42rem 0.85rem;font-size:0.78rem;border:none;cursor:pointer;">Save</button>
                            <button type="button" class="link-subtle-btn" style="font-size:0.76rem;" onclick="window.DrevalithPublicUI.toggleEditName(false)">Cancel</button>
                          </form>`
@@ -824,6 +836,11 @@
       activeAuthTab = "verify";
       wasWaitingForEmailVerify = true;
       const targetEmail = playerAuthState.pendingVerificationEmail || "your email";
+      const verifyKey = `verify:${targetEmail}`;
+      if (!forceReset && mountedAuthModeKey === verifyKey && document.getElementById("drev-resend-verify-btn")) {
+        return;
+      }
+      mountedAuthModeKey = verifyKey;
       const initWaitSec = Number(playerAuthState.cooldownSec || 0);
 
       mount.innerHTML = `
@@ -883,9 +900,23 @@
       verifyCooldownTicker = null;
     }
 
-    // STATE C: LOGGED OUT -> SIGN IN OR SIGN UP FORM (FRESH BLANK INPUTS ON EVERY SWITCH!)
+    // STATE C: LOGGED OUT -> SIGN IN OR SIGN UP FORM
+    // CRITICAL: Never re-render or reset an active Sign In / Sign Up form during background
+    // store/auth ticks while the user is typing! Only reset when forceReset === true.
     const isSignup = activeAuthTab === "signup";
+    const desiredFormKey = `form:${isSignup ? "signup" : "login"}`;
+    if (!forceReset && mountedAuthModeKey === desiredFormKey && document.getElementById("drev-active-auth-form")) {
+      return;
+    }
+    mountedAuthModeKey = desiredFormKey;
     const rk = ++authFormRenderNonce;
+    const decoyTrap = `
+      <div aria-hidden="true" style="position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;">
+        <input type="text" name="d_trap_u_${rk}" tabindex="-1" autocomplete="username" />
+        <input type="password" name="d_trap_p_${rk}" tabindex="-1" autocomplete="current-password" />
+      </div>
+    `;
+
     mount.innerHTML = `
       <div class="drev-auth-card" data-render-key="${rk}">
         <span class="section-tag">Drevalith Games™ // Account</span>
@@ -914,22 +945,23 @@
         ${
           isSignup
             ? `
-          <form id="drev-active-auth-form" autocomplete="off" onsubmit="window.DrevalithPublicUI.submitSignup(event)">
+          <form id="drev-active-auth-form" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" novalidate onsubmit="window.DrevalithPublicUI.submitSignup(event)">
+            ${decoyTrap}
             <div class="drev-field">
               <label for="drev-signup-name">Name *</label>
-              <input type="text" id="drev-signup-name" name="drev_sname_${rk}" value="" class="drev-input" placeholder="Enter your name" autocomplete="off" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
+              <input type="text" id="drev-signup-name" name="f_a_${rk}" value="" class="drev-input" placeholder="Enter your name" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" aria-autocomplete="none" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
             </div>
             <div class="drev-field">
               <label for="drev-signup-email">Email *</label>
-              <input type="email" id="drev-signup-email" name="drev_semail_${rk}" value="" class="drev-input" placeholder="you@example.com" autocomplete="off" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
+              <input type="text" inputmode="email" id="drev-signup-email" name="f_b_${rk}" value="" class="drev-input" placeholder="you@example.com" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-autocomplete="none" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
             </div>
             <div class="drev-field">
               <label for="drev-signup-pass">Password (Min 6 Characters) *</label>
-              <input type="password" id="drev-signup-pass" name="drev_spass_${rk}" value="" class="drev-input" placeholder="••••••••" minlength="6" autocomplete="new-password" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
+              <input type="password" id="drev-signup-pass" name="f_c_${rk}" value="" class="drev-input" placeholder="••••••••" autocomplete="new-password" autocorrect="off" autocapitalize="none" spellcheck="false" aria-autocomplete="none" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
             </div>
             <div class="drev-field">
               <label for="drev-signup-pass2">Confirm Password *</label>
-              <input type="password" id="drev-signup-pass2" name="drev_spass2_${rk}" value="" class="drev-input" placeholder="••••••••" minlength="6" autocomplete="new-password" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
+              <input type="password" id="drev-signup-pass2" name="f_d_${rk}" value="" class="drev-input" placeholder="••••••••" autocomplete="new-password" autocorrect="off" autocapitalize="none" spellcheck="false" aria-autocomplete="none" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
             </div>
             <button type="submit" id="drev-signup-btn" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
               Sign Up
@@ -937,14 +969,15 @@
           </form>
         `
             : `
-          <form id="drev-active-auth-form" autocomplete="off" onsubmit="window.DrevalithPublicUI.submitLogin(event)">
+          <form id="drev-active-auth-form" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" novalidate onsubmit="window.DrevalithPublicUI.submitLogin(event)">
+            ${decoyTrap}
             <div class="drev-field">
               <label for="drev-login-email">Email *</label>
-              <input type="email" id="drev-login-email" name="drev_lemail_${rk}" value="" class="drev-input" placeholder="you@example.com" autocomplete="off" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
+              <input type="text" inputmode="email" id="drev-login-email" name="f_e_${rk}" value="" class="drev-input" placeholder="you@example.com" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-autocomplete="none" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
             </div>
             <div class="drev-field">
               <label for="drev-login-pass">Password *</label>
-              <input type="password" id="drev-login-pass" name="drev_lpass_${rk}" value="" class="drev-input" placeholder="••••••••" autocomplete="new-password" data-lpignore="true" readonly onpointerdown="this.removeAttribute('readonly')" onfocus="this.removeAttribute('readonly')" required />
+              <input type="password" id="drev-login-pass" name="f_f_${rk}" value="" class="drev-input" placeholder="••••••••" autocomplete="new-password" autocorrect="off" autocapitalize="none" spellcheck="false" aria-autocomplete="none" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
             </div>
             <button type="submit" id="drev-login-btn" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
               Sign In
@@ -960,7 +993,6 @@
       </div>
     `;
     clearAuthFormInputs();
-    setTimeout(clearAuthFormInputs, 0);
   }
 
   // --------------------------------------------------------------------------
@@ -981,7 +1013,7 @@
             Enter a valid Studio Private Key to unlock the full .ZIP game download for free ($0.00).
           </p>
           <div id="drev-key-alert" class="drev-alert"></div>
-          <form id="drev-key-form">
+          <form id="drev-key-form" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" novalidate>
             <input type="hidden" id="drev-key-game-id" />
             <div class="drev-field">
               <label for="drev-key-code">Private Access Key *</label>
@@ -992,12 +1024,18 @@
                 placeholder="DREV-XXXX-XXXX-XXXX"
                 maxlength="24"
                 autocomplete="off"
+                autocorrect="off"
+                autocapitalize="characters"
+                spellcheck="false"
+                aria-autocomplete="none"
+                data-lpignore="true"
+                data-1p-ignore="true"
                 required
               />
             </div>
             <div class="drev-field">
               <label for="drev-key-email">Your Name or Email (Optional)</label>
-              <input type="text" id="drev-key-email" class="drev-input" placeholder="player@example.com" />
+              <input type="text" id="drev-key-email" class="drev-input" placeholder="player@example.com" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-autocomplete="none" data-lpignore="true" data-1p-ignore="true" />
             </div>
             <button type="submit" id="drev-key-submit" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
               🔑 Verify Key &amp; Unlock Free Download
@@ -1026,7 +1064,7 @@
 
           <div class="drev-field">
             <label for="rzp-sim-email">Buyer Email *</label>
-            <input type="email" id="rzp-sim-email" class="drev-input" value="player@drevalithgames.com" required />
+            <input type="text" inputmode="email" id="rzp-sim-email" class="drev-input" value="player@drevalithgames.com" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-autocomplete="none" required />
           </div>
 
           <label style="display:block;font-size:0.75rem;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);margin-bottom:0.4rem;">
@@ -1614,10 +1652,7 @@
         playerAuthState.pendingVerificationEmail = "";
         wasWaitingForEmailVerify = false;
       }
-      renderAccountAndPurchasesPage();
-      clearAuthFormInputs();
-      setTimeout(clearAuthFormInputs, 0);
-      setTimeout(clearAuthFormInputs, 40);
+      renderAccountAndPurchasesPage(true);
     },
     async submitSignup(e) {
       e.preventDefault();
@@ -1630,7 +1665,17 @@
 
       if (!displayName) {
         alertEl.className = "drev-alert error";
-        alertEl.textContent = "Please enter your Name.";
+        alertEl.textContent = "Please enter your name.";
+        return;
+      }
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        alertEl.className = "drev-alert error";
+        alertEl.textContent = "Please enter a valid email address.";
+        return;
+      }
+      if (!password || password.length < 6) {
+        alertEl.className = "drev-alert error";
+        alertEl.textContent = "Password must be at least 6 characters.";
         return;
       }
       if (password !== password2) {
@@ -1654,7 +1699,7 @@
         playerAuthState.pendingVerificationEmail = res.email;
         wasWaitingForEmailVerify = true;
         activeAuthTab = "verify";
-        renderAccountAndPurchasesPage();
+        renderAccountAndPurchasesPage(true);
         showToast(
           res.sent
             ? `📧 Verification link sent to ${res.email}!`
@@ -1725,6 +1770,17 @@
       const alertEl = document.getElementById("drev-auth-alert");
       const btn = document.getElementById("drev-login-btn");
 
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        alertEl.className = "drev-alert error";
+        alertEl.textContent = "Please enter a valid email address.";
+        return;
+      }
+      if (!password) {
+        alertEl.className = "drev-alert error";
+        alertEl.textContent = "Please enter your password.";
+        return;
+      }
+
       alertEl.className = "drev-alert";
       btn.disabled = true;
       btn.textContent = "Signing In...";
@@ -1732,10 +1788,11 @@
       try {
         const res = await Store.loginPlayerAccount({ email, password });
         if (!res.verified) {
+          clearAuthFormInputs();
           playerAuthState.pendingVerificationEmail = res.email;
           wasWaitingForEmailVerify = true;
           activeAuthTab = "verify";
-          renderAccountAndPurchasesPage();
+          renderAccountAndPurchasesPage(true);
           showToast("Please verify your email via the link sent to your inbox.");
           return;
         }
@@ -1779,8 +1836,7 @@
       await Store.logoutPlayerAccount();
       wasWaitingForEmailVerify = false;
       activeAuthTab = "login";
-      renderAccountAndPurchasesPage();
-      clearAuthFormInputs();
+      renderAccountAndPurchasesPage(true);
       renderPublishedGames();
       showToast("Signed out.");
     }
@@ -1790,12 +1846,13 @@
     injectStoreStyles();
     ensurePlayerAccountPageAndNav();
     ensureModals();
-    renderAccountAndPurchasesPage();
+    renderAccountAndPurchasesPage(false);
 
     const hash = window.location.hash.replace("#", "").toLowerCase();
     if (hash === "account" || hash === "purchases" || hash === "login" || hash === "signup") {
       if (hash === "signup") activeAuthTab = "signup";
       window.switchPage("account", false);
+      renderAccountAndPurchasesPage(true);
     }
 
     Store.subscribePlayerAuth((nextAuth) => {
@@ -1813,13 +1870,15 @@
         return;
       }
       renderPublishedGames();
-      renderAccountAndPurchasesPage();
+      renderAccountAndPurchasesPage(false);
     });
 
     Store.subscribePublicStore((nextState) => {
       currentStoreState = nextState;
       renderPublishedGames();
-      renderAccountAndPurchasesPage();
+      if (playerAuthState.user) {
+        renderAccountAndPurchasesPage(false);
+      }
       checkUrlRedeemParams();
     });
   });
