@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://drevalithgames.github.io/sitemap.xml
