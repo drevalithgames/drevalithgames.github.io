@@ -1036,6 +1036,9 @@
         ? { id: gameId, title: currentPlayerPurchases[gameId].gameTitle || "Game" }
         : null);
     if (!game) throw new Error("Game metadata is still loading — please click again in a moment.");
+    if (game.isComingSoon || game.releaseStatus === "coming_soon") {
+      throw new Error("This game is Coming Soon and not yet available for download.");
+    }
 
     const isUnlocked = Boolean(game.isFree || getUnlockForGame(gameId));
     if (!isUnlocked) {
@@ -1117,8 +1120,22 @@
     if (isRealtimeDbConfigured()) {
       let unsubGames = null;
       let unsubSettings = null;
+      let restPollTimer = null;
       let latestGames = [];
-      let latestSettings = { showDefaultComingSoon: true };
+      let latestSettings = { showDefaultComingSoon: false };
+
+      const parseGamesMap = (val) => {
+        const obj = val && typeof val === "object" ? val : {};
+        return Object.keys(obj)
+          .filter((id) => obj[id] && typeof obj[id] === "object")
+          .map((id) => ({
+            id,
+            ...obj[id],
+            coverImageUrl: normalizePublicCoverUrl(obj[id].coverImageUrl)
+          }))
+          .filter((g) => g.published !== false)
+          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      };
 
       const emit = () => {
         latestPublicGamesCache = latestGames;
@@ -1129,18 +1146,21 @@
         });
       };
 
+      // Instant HTTPS REST fetch (<150ms) so games appear immediately even if WebSockets are blocked!
+      const fetchViaRest = async () => {
+        try {
+          const gMap = await rtdbRestJson("GET", "games");
+          latestGames = parseGamesMap(gMap);
+          emit();
+        } catch (_) {}
+      };
+      fetchViaRest();
+      restPollTimer = setInterval(fetchViaRest, 15000);
+
       getPublicRealtimeDb()
         .then(({ rtdb, dbMod }) => {
           unsubGames = dbMod.onValue(dbMod.ref(rtdb, "games"), (snap) => {
-            const val = snap.val() || {};
-            latestGames = Object.keys(val)
-              .map((id) => ({
-                id,
-                ...val[id],
-                coverImageUrl: normalizePublicCoverUrl(val[id].coverImageUrl)
-              }))
-              .filter((g) => g.published !== false)
-              .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+            latestGames = parseGamesMap(snap.val());
             emit();
           });
           unsubSettings = dbMod.onValue(dbMod.ref(rtdb, "settings/public_store"), (snap) => {
@@ -1148,11 +1168,10 @@
             emit();
           });
         })
-        .catch(() => {
-          onChange({ mode: "offline", settings: { showDefaultComingSoon: true }, games: [] });
-        });
+        .catch(() => {});
 
       return () => {
+        if (restPollTimer) clearInterval(restPollTimer);
         if (unsubGames) unsubGames();
         if (unsubSettings) unsubSettings();
       };
@@ -1246,6 +1265,9 @@
   }
 
   async function createPaymentOrder(game) {
+    if (game && (game.isComingSoon || game.releaseStatus === "coming_soon")) {
+      throw new Error("This game is Coming Soon and cannot be purchased yet.");
+    }
     const fc = CFG.FIREBASE_CONFIG || {};
     const backendOrder = await tryBackendJson("/api/razorpay/create-order", {
       gameId: game.id,
@@ -1511,6 +1533,7 @@
     isRealtimeDbConfigured,
     isRazorpayLiveKeyConfigured,
     formatPrice,
+    formatCurrency: (price, currency) => formatPrice(price, currency, false),
     formatPrivateKeyInput,
     getUnlockForGame,
     hasGameUpdateAvailable,

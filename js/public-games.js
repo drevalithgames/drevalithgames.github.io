@@ -187,6 +187,11 @@
         border-color: rgba(74, 222, 128, 0.5);
         color: #86efac;
       }
+      .price-pill-highlight.coming-soon {
+        background: rgba(245, 158, 11, 0.18);
+        border-color: rgba(251, 191, 36, 0.58);
+        color: #fde68a;
+      }
       .nav-update-dot {
         display: inline-block;
         padding: 0.12rem 0.48rem;
@@ -1299,198 +1304,260 @@
 
     const defaultBanner = document.getElementById("default-upcoming-banner");
     if (defaultBanner) {
-      const showDefault =
-        !currentStoreState.settings || currentStoreState.settings.showDefaultComingSoon !== false;
-      defaultBanner.style.display = showDefault ? "" : "none";
+      defaultBanner.remove();
     }
 
     const games = currentStoreState.games || [];
     if (!games.length) {
-      mount.innerHTML = "";
+      mount.innerHTML = `
+        <div class="release-banner tilt-card" style="display:block;text-align:center;padding:2.5rem 2rem;">
+          <div class="badge" style="margin:0 auto 0.85rem auto;display:inline-flex;">
+            <span class="badge-dot"></span>
+            <span>Official Studio Catalog</span>
+          </div>
+          <h3 class="game-title" style="font-size:1.55rem;margin-bottom:0.5rem;">New Studio Releases Arriving Soon</h3>
+          <p style="color:var(--text-muted);font-size:0.92rem;max-width:560px;margin:0 auto;">
+            Official Paid, Free, and Coming Soon titles published from the Drevalith Games™ Console appear here automatically in real time.
+          </p>
+        </div>
+      `;
+      attachTiltToDynamicCards(mount);
       return;
     }
 
     mount.innerHTML = games
       .map((game) => {
-        const isFree = Boolean(game.isFree) || Number(game.price || 0) <= 0;
-        const unlock = !isFree ? Store.getUnlockForGame(game.id) : null;
-        const purchaseRec = (playerAuthState.purchases || {})[game.id] || null;
-        const hasUpdate = purchaseRec ? Store.hasGameUpdateAvailable(game, purchaseRec) : false;
-        const hasGameplayTab = Boolean(game.gameplayText && game.gameplayText.trim());
-        const hasFeaturesTab = Array.isArray(game.featuresList) && game.featuresList.length > 0;
-        const showSubtabs = hasGameplayTab || hasFeaturesTab;
+        try {
+          const isComingSoon = Boolean(game.isComingSoon || game.releaseStatus === "coming_soon");
+          const isFree = !isComingSoon && (Boolean(game.isFree) || Number(game.price || 0) <= 0);
+          const comingSoonLabel = String(game.comingSoonLabel || game.releaseDate || "To Be Announced").trim() || "To Be Announced";
+          const unlock = !isComingSoon && !isFree ? Store.getUnlockForGame(game.id) : null;
+          const purchaseRec = (playerAuthState.purchases || {})[game.id] || null;
+          const hasUpdate = !isComingSoon && purchaseRec ? Store.hasGameUpdateAvailable(game, purchaseRec) : false;
+          const hasGameplayTab = Boolean(game.gameplayText && game.gameplayText.trim());
+          const hasFeaturesTab = Array.isArray(game.featuresList) && game.featuresList.length > 0;
+          const showSubtabs = hasGameplayTab || hasFeaturesTab;
 
-        const priceFormatted = isFree
-          ? "FREE DOWNLOAD"
-          : Store.formatCurrency(game.price, game.currency);
+          const priceFormatted = isComingSoon
+            ? "COMING SOON"
+            : isFree
+            ? "FREE DOWNLOAD"
+            : Store.formatCurrency(game.price, game.currency);
 
-        let actionButtonsHtml = "";
-        let statusStripHtml = "";
+          let actionButtonsHtml = "";
+          let statusStripHtml = "";
 
-        if (isFree) {
-          actionButtonsHtml = `
-            <button type="button" class="btn-download-unlocked" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, false)">
-              <span>⬇</span>
-              <span>Free Download .ZIP (${esc(game.zipSizeFormatted || "ZIP")})</span>
-            </button>
-            <button class="btn-secondary" onclick="window.switchPage('studio')">Studio Info →</button>
-          `;
-          statusStripHtml = `
-            <div class="unlock-status-strip verified">
-              <span>✅ <strong>Official Free Release</strong> — Instant .ZIP download unlocked for all players.</span>
-            </div>
-          `;
-        } else if (unlock) {
-          actionButtonsHtml = `
-            ${
-              hasUpdate
-                ? `<button type="button" class="btn-download-update" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, true)">
-                     <span>🔄</span>
-                     <span>Download Update (${esc(game.version || "Latest")} .ZIP)</span>
-                   </button>`
-                : ""
-            }
-            <button type="button" class="btn-download-unlocked" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, false)">
-              <span>⬇</span>
-              <span>Download ${esc(game.zipFileName || "Game .ZIP")} (${esc(game.zipSizeFormatted || "ZIP")})</span>
-            </button>
-            <button class="btn-secondary" onclick="window.switchPage('account')">My Purchases →</button>
-          `;
-          statusStripHtml = hasUpdate
-            ? `
-              <div class="unlock-status-strip update-ready">
-                <span>🔥 <strong>New Update Available (${esc(game.version || "Latest")}):</strong> ${esc(game.updateNotes || "New game update uploaded — download free!")}</span>
-              </div>
-            `
-            : `
-              <div class="unlock-status-strip verified">
-                <span>✅ <strong>Purchased &amp; Unlocked</strong> — Full game package &amp; future updates unlocked in your library.</span>
+          if (isComingSoon) {
+            actionButtonsHtml = `
+              <button type="button" class="btn-disabled" disabled>
+                <span>⏳</span>
+                <span>Coming Soon</span>
+              </button>
+              <button class="btn-secondary" onclick="window.switchPage('studio')">Studio Info →</button>
+            `;
+            statusStripHtml = `
+              <div class="unlock-status-strip" style="background:rgba(245,158,11,0.12);border-color:rgba(251,191,36,0.45);color:#fde68a;">
+                <span>⏳ <strong>Coming Soon (${esc(comingSoonLabel)}):</strong> Currently in active studio development — official store checkout &amp; download unlock at launch.</span>
               </div>
             `;
-        } else {
-          actionButtonsHtml = `
-            <button type="button" class="btn-primary" style="border:none;cursor:pointer;" onclick="window.DrevalithPublicUI.pay('${esc(game.id)}', this)">
-              💳 Buy &amp; Download — ${esc(priceFormatted)}
-            </button>
-            <button type="button" class="btn-key-trigger" onclick="window.DrevalithPublicUI.openKey('${esc(game.id)}')">
-              🔑 Enter Private Key
-            </button>
-            <button type="button" class="btn-disabled" disabled>
-              <span>🔒</span>
-              <span>Download .ZIP Locked</span>
-            </button>
-          `;
-          statusStripHtml = `
-            <div class="unlock-status-strip">
-              <span>🔒 <strong>Protected Build:</strong> Buy once (${esc(priceFormatted)}) to unlock instant download + lifetime game updates in <strong>My Purchases</strong>.</span>
-              <button type="button" class="link-subtle-btn" onclick="window.switchPage('account')">
-                Already bought? Sign In
+          } else if (isFree) {
+            actionButtonsHtml = `
+              <button type="button" class="btn-download-unlocked" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, false)">
+                <span>⬇</span>
+                <span>Free Download .ZIP (${esc(game.zipSizeFormatted || "ZIP")})</span>
               </button>
-            </div>
-          `;
-        }
-
-        const coverSrc =
-          game.coverImageUrl &&
-          game.coverImageUrl.startsWith("/") &&
-          window.DREVALITH_CONFIG &&
-          window.DREVALITH_CONFIG.BACKEND_API_URL
-            ? window.DREVALITH_CONFIG.BACKEND_API_URL.replace(/\/+$/, "") + game.coverImageUrl
-            : game.coverImageUrl;
-
-        return `
-          <div class="release-banner tilt-card" data-game-id="${esc(game.id)}">
-            <div>
-              <div style="display:flex;flex-wrap:wrap;align-items:center;gap:0.6rem;margin-bottom:0.45rem;">
-                <div class="badge" style="margin-bottom:0;">
-                  <span class="badge-dot"></span>
-                  <span>${esc(game.badgeText || "Official Studio Release")}</span>
-                </div>
-                <span class="price-pill-highlight ${isFree ? "free" : ""}">
-                  ${esc(priceFormatted)}
-                </span>
+              <button class="btn-secondary" onclick="window.switchPage('studio')">Studio Info →</button>
+            `;
+            statusStripHtml = `
+              <div class="unlock-status-strip verified">
+                <span>✅ <strong>Official Free Release</strong> — Instant .ZIP download unlocked for all players.</span>
               </div>
-
-              <h3 class="game-title">${esc(game.title)}</h3>
-              <div class="game-subtitle">
-                ${esc(game.subtitle || game.modes || "Windows PC")}
-                ${game.version ? `&nbsp;•&nbsp; ${esc(game.version)}` : ""}
-              </div>
-
+            `;
+          } else if (unlock) {
+            actionButtonsHtml = `
               ${
-                showSubtabs
-                  ? `
-                <div class="game-subtabs">
-                  <button class="subtab-btn active" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'overview')">Overview</button>
-                  ${
-                    hasGameplayTab
-                      ? `<button class="subtab-btn" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'gameplay')">Gameplay &amp; Survival</button>`
-                      : ""
-                  }
-                  ${
-                    hasFeaturesTab
-                      ? `<button class="subtab-btn" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'features')">Key Features</button>`
-                      : ""
-                  }
-                </div>
-              `
+                hasUpdate
+                  ? `<button type="button" class="btn-download-update" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, true)">
+                       <span>🔄</span>
+                       <span>Download Update (${esc(game.version || "Latest")} .ZIP)</span>
+                     </button>`
                   : ""
               }
+              <button type="button" class="btn-download-unlocked" onclick="window.DrevalithPublicUI.download('${esc(game.id)}', this, false)">
+                <span>⬇</span>
+                <span>Download ${esc(game.zipFileName || "Game .ZIP")} (${esc(game.zipSizeFormatted || "ZIP")})</span>
+              </button>
+              <button class="btn-secondary" onclick="window.switchPage('account')">My Purchases →</button>
+            `;
+            statusStripHtml = hasUpdate
+              ? `
+                <div class="unlock-status-strip update-ready">
+                  <span>🔥 <strong>New Update Available (${esc(game.version || "Latest")}):</strong> ${esc(game.updateNotes || "New game update uploaded — download free!")}</span>
+                </div>
+              `
+              : `
+                <div class="unlock-status-strip verified">
+                  <span>✅ <strong>Purchased &amp; Unlocked</strong> — Full game package &amp; future updates unlocked in your library.</span>
+                </div>
+              `;
+          } else {
+            actionButtonsHtml = `
+              <button type="button" class="btn-primary" style="border:none;cursor:pointer;" onclick="window.DrevalithPublicUI.pay('${esc(game.id)}', this)">
+                💳 Buy &amp; Download — ${esc(priceFormatted)}
+              </button>
+              <button type="button" class="btn-key-trigger" onclick="window.DrevalithPublicUI.openKey('${esc(game.id)}')">
+                🔑 Enter Private Key
+              </button>
+              <button type="button" class="btn-disabled" disabled>
+                <span>🔒</span>
+                <span>Download .ZIP Locked</span>
+              </button>
+            `;
+            statusStripHtml = `
+              <div class="unlock-status-strip">
+                <span>🔒 <strong>Protected Build:</strong> Buy once (${esc(priceFormatted)}) to unlock instant download + lifetime game updates in <strong>My Purchases</strong>.</span>
+                <button type="button" class="link-subtle-btn" onclick="window.switchPage('account')">
+                  Already bought? Sign In
+                </button>
+              </div>
+            `;
+          }
 
-              <div id="dyn-tab-box-${esc(game.id)}" class="subtab-content" style="min-height:auto;">
-                ${formatParagraphs(game.description)}
+          const coverSrc =
+            game.coverImageUrl &&
+            game.coverImageUrl.startsWith("/") &&
+            window.DREVALITH_CONFIG &&
+            window.DREVALITH_CONFIG.BACKEND_API_URL
+              ? window.DREVALITH_CONFIG.BACKEND_API_URL.replace(/\/+$/, "") + game.coverImageUrl
+              : game.coverImageUrl;
+
+          const pillClass = isComingSoon ? "coming-soon" : isFree ? "free" : "";
+          const badgeLabel = isComingSoon
+            ? game.badgeText || "Upcoming Release"
+            : game.badgeText || "Official Studio Release";
+
+          return `
+            <div class="release-banner tilt-card" data-game-id="${esc(game.id)}">
+              <div>
+                <div style="display:flex;flex-wrap:wrap;align-items:center;gap:0.6rem;margin-bottom:0.45rem;">
+                  <div class="badge" style="margin-bottom:0;">
+                    <span class="badge-dot"></span>
+                    <span>${esc(badgeLabel)}</span>
+                  </div>
+                  <span class="price-pill-highlight ${pillClass}">
+                    ${isComingSoon ? `⏳ ${esc(priceFormatted)}` : esc(priceFormatted)}
+                  </span>
+                </div>
+
+                <h3 class="game-title">${esc(game.title)}</h3>
+                <div class="game-subtitle">
+                  ${esc(game.subtitle || game.modes || "Windows PC")}
+                  ${!isComingSoon && game.version ? `&nbsp;•&nbsp; ${esc(game.version)}` : ""}
+                </div>
+
+                ${
+                  showSubtabs
+                    ? `
+                  <div class="game-subtabs">
+                    <button class="subtab-btn active" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'overview')">Overview</button>
+                    ${
+                      hasGameplayTab
+                        ? `<button class="subtab-btn" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'gameplay')">Gameplay &amp; Survival</button>`
+                        : ""
+                    }
+                    ${
+                      hasFeaturesTab
+                        ? `<button class="subtab-btn" type="button" onclick="window.DrevalithPublicUI.tab(this, '${esc(game.id)}', 'features')">Key Features</button>`
+                        : ""
+                    }
+                  </div>
+                `
+                    : ""
+                }
+
+                <div id="dyn-tab-box-${esc(game.id)}" class="subtab-content" style="min-height:auto;">
+                  ${formatParagraphs(game.description)}
+                </div>
+
+                <div style="display:flex;flex-wrap:wrap;gap:0.85rem;align-items:center;">
+                  ${actionButtonsHtml}
+                </div>
+
+                ${statusStripHtml}
               </div>
 
-              <div style="display:flex;flex-wrap:wrap;gap:0.85rem;align-items:center;">
-                ${actionButtonsHtml}
-              </div>
+              <div class="release-preview">
+                <div class="preview-top" style="width:100%;margin-bottom:1.1rem;">
+                  ${
+                    coverSrc
+                      ? `<div style="width:100%;border-radius:10px;overflow:hidden;border:1px solid rgba(242,53,25,0.45);box-shadow:0 12px 30px rgba(0,0,0,0.8);margin-bottom:0.75rem;">
+                          <img
+                            src="${esc(coverSrc)}"
+                            alt="${esc(game.title)} Official Cover"
+                            style="width:100%;height:auto;max-height:310px;display:block;object-fit:cover;margin:0;border-radius:0;"
+                          />
+                        </div>`
+                      : ""
+                  }
+                  <div style="color:var(--accent);font-size:0.75rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;">
+                    Official Game Cover • Drevalith Games™
+                  </div>
+                </div>
 
-              ${statusStripHtml}
+                <div class="specs-box">
+                  <div class="spec-row">
+                    <span class="spec-label">Status</span>
+                    <span class="spec-val accent">${
+                      isComingSoon ? "In Development" : "Available for Download"
+                    }</span>
+                  </div>
+                  ${
+                    isComingSoon
+                      ? `
+                      <div class="spec-row">
+                        <span class="spec-label">Release Date</span>
+                        <span class="spec-val">${esc(comingSoonLabel)}</span>
+                      </div>
+                      <div class="spec-row">
+                        <span class="spec-label">Platform</span>
+                        <span class="spec-val">${esc(game.platform || "Windows PC")}</span>
+                      </div>
+                      <div class="spec-row">
+                        <span class="spec-label">Modes</span>
+                        <span class="spec-val">${esc(game.modes || "Singleplayer / Co-op")}</span>
+                      </div>
+                      `
+                      : `
+                      <div class="spec-row">
+                        <span class="spec-label">Version</span>
+                        <span class="spec-val">${esc(game.version || "v1.0.0")}</span>
+                      </div>
+                      <div class="spec-row">
+                        <span class="spec-label">Price</span>
+                        <span class="spec-val">${esc(priceFormatted)}</span>
+                      </div>
+                      <div class="spec-row">
+                        <span class="spec-label">Platform</span>
+                        <span class="spec-val">${esc(game.platform || "Windows PC")}</span>
+                      </div>
+                      <div class="spec-row">
+                        <span class="spec-label">Release Date</span>
+                        <span class="spec-val">${esc(game.releaseDate || "Available Now")}</span>
+                      </div>
+                      <div class="spec-row">
+                        <span class="spec-label">Download Package</span>
+                        <span class="spec-val">.ZIP (${esc(game.zipSizeFormatted || "Archive")})</span>
+                      </div>
+                      `
+                  }
+                </div>
+              </div>
             </div>
-
-            <div class="release-preview">
-              <div class="preview-top" style="width:100%;margin-bottom:1.1rem;">
-                <div style="width:100%;border-radius:10px;overflow:hidden;border:1px solid rgba(242,53,25,0.45);box-shadow:0 12px 30px rgba(0,0,0,0.8);margin-bottom:0.75rem;">
-                  <img
-                    src="${esc(coverSrc)}"
-                    alt="${esc(game.title)} Official Cover"
-                    style="width:100%;height:auto;max-height:310px;display:block;object-fit:cover;margin:0;border-radius:0;"
-                  />
-                </div>
-                <div style="color:var(--accent);font-size:0.75rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;">
-                  Official Game Cover • Drevalith Games™
-                </div>
-              </div>
-
-              <div class="specs-box">
-                <div class="spec-row">
-                  <span class="spec-label">Status</span>
-                  <span class="spec-val accent">Available for Download</span>
-                </div>
-                <div class="spec-row">
-                  <span class="spec-label">Version</span>
-                  <span class="spec-val">${esc(game.version || "v1.0.0")}</span>
-                </div>
-                <div class="spec-row">
-                  <span class="spec-label">Price</span>
-                  <span class="spec-val">${esc(priceFormatted)}</span>
-                </div>
-                <div class="spec-row">
-                  <span class="spec-label">Platform</span>
-                  <span class="spec-val">${esc(game.platform || "Windows PC")}</span>
-                </div>
-                <div class="spec-row">
-                  <span class="spec-label">Release Date</span>
-                  <span class="spec-val">${esc(game.releaseDate || "Available Now")}</span>
-                </div>
-                <div class="spec-row">
-                  <span class="spec-label">Download Package</span>
-                  <span class="spec-val">.ZIP (${esc(game.zipSizeFormatted || "Archive")})</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        `;
+          `;
+        } catch (cardErr) {
+          console.error("Game card render error:", cardErr);
+          return "";
+        }
       })
       .join("");
 
