@@ -1,39 +1,39 @@
 /**
  * ============================================================================
- * DREVALITH GAMES™ — PUBLIC STOREFRONT, PLAYER AUTH & UPDATE ENGINE (v5)
+ * DREVALITH GAMES™ — HYBRID REALTIME DATABASE + VERIFIED ACCOUNTS ENGINE v8
  * ============================================================================
- * Features:
- *   1. Real-Time Game Catalog from Free Firebase Realtime Database (/games)
- *   2. Separate Secure Player Accounts (/users/{uid}) with Mandatory Email
- *      Verification Link BEFORE account creation in Firebase Database!
- *   3. Permanent Cloud Purchase Library (/users/{uid}/purchases/{gameId}) +
- *      Automatic Game Update Detection & Free Update Downloads for Buyers!
- *   4. Streaming Chunked .ZIP Downloads up to 500 MB (/zip_blobs/{token}) +
- *      Direct Google Drive Streaming with ZERO "No Permission" errors!
- *   5. Razorpay Checkout + AES-256-GCM Private Key Unlocking.
+ * - 100% Free Spark Architecture: Firebase Realtime Database + Direct Google Drive
+ *   (Zero paid Firebase Cloud Storage!)
+ * - Bulletproof Player Sign Up & Email Verification:
+ *   1. Calls native Firebase sendEmailVerification(user) with ZERO custom
+ *      continueUrl so Firebase never blocks email dispatch with unauthorized-uri.
+ *   2. Uses persistent localStorage 90-second per-email cooldown across tabs so
+ *      Firebase never throws auth/too-many-requests.
+ *   3. Smart recovery if an unverified email already exists in Firebase Auth
+ *      (signs in seamlessly, updates Name, and watches verification live).
+ *   4. NO "I clicked the verification link" button — a 2-second + tab-focus live
+ *      watcher detects emailVerified === true automatically, refreshes the JWT
+ *      ID token with retry-backed RTDB propagation, saves { name, email } into
+ *      /users/{uid}/profile, fetches Name & Email directly back from Firebase
+ *      Database, and opens the player's Account & Profile automatically!
+ * - Reliable 25 MB .ZIP Capability Vault Download (rtdb_gate_blob:, rtdb_blob:,
+ *   rtdb_chunks:, and AES-256-GCM protected Google Drive links).
  * ============================================================================
  */
-
 (function () {
+  "use strict";
+
   const CFG = window.DREVALITH_CONFIG || {};
-  const API_BASE = (CFG.BACKEND_API_URL || "").replace(/\/+$/, "");
-  const UNLOCK_STORAGE_KEY = "drevalith_verified_unlocks_v5";
-  const BC_NAME = "drevalith_realtime_bus_v5";
+  const API_BASE = String(CFG.BACKEND_API_URL || "").replace(/\/+$/, "");
+  const UNLOCK_RECEIPTS_KEY = "drevalith_verified_unlocks_v4";
+  const VERIFY_COOLDOWN_PREFIX = "drev_verify_email_ts_v8_";
+  const PENDING_NAME_PREFIX = "drev_pending_signup_name_v8_";
+  const VERIFY_COOLDOWN_MS = 90 * 1000; // 90s persistent cross-tab cooldown prevents auth/too-many-requests
 
   const broadcastBus =
-    typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(BC_NAME) : null;
-
-  function isStaticGithubHostWithoutBackend() {
-    if (API_BASE) return false;
-    const h = (window.location.hostname || "").toLowerCase();
-    return (
-      h.endsWith(".github.io") ||
-      h.endsWith(".netlify.app") ||
-      h.endsWith(".pages.dev") ||
-      h.endsWith(".web.app") ||
-      h.endsWith(".firebaseapp.com")
-    );
-  }
+    typeof BroadcastChannel !== "undefined"
+      ? new BroadcastChannel("drevalith_store_realtime_v4")
+      : null;
 
   function isFirebaseConfigured() {
     const fc = CFG.FIREBASE_CONFIG;
@@ -56,43 +56,18 @@
   }
 
   function isRazorpayLiveKeyConfigured() {
-    const k = CFG.RAZORPAY_KEY_ID;
-    return Boolean(k && !String(k).startsWith("YOUR_") && String(k).startsWith("rzp_"));
+    const k = String(CFG.RAZORPAY_KEY_ID || "").trim();
+    return Boolean(k && !k.startsWith("YOUR_") && k.startsWith("rzp_"));
   }
 
-  function normalizePrivateKey(code) {
-    return String(code || "")
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, "");
-  }
-
-  function formatPrivateKeyInput(val) {
-    const clean = normalizePrivateKey(val).slice(0, 16);
-    const groups = clean.match(/.{1,4}/g);
-    return groups ? groups.join("-") : clean;
-  }
-
-  function formatBytes(bytes) {
-    const n = Number(bytes || 0);
-    if (!n || n <= 0) return "ZIP Build";
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-    return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-  }
-
-  function formatCurrency(price, currency) {
-    const num = Number(price || 0);
-    if (num <= 0) return "FREE";
-    const cur = String(currency || "USD").toUpperCase();
-    if (cur === "INR") {
-      return `₹${num % 1 === 0 ? num.toFixed(0) : num.toFixed(2)} INR`;
-    }
-    return `$${num.toFixed(2)} USD`;
+  function isStaticGithubHostWithoutBackend() {
+    if (API_BASE) return false;
+    const h = (typeof location !== "undefined" && location.hostname) || "";
+    return h.endsWith(".github.io") || h.endsWith(".pages.dev") || h.endsWith(".netlify.app");
   }
 
   // --------------------------------------------------------------------------
-  // Web Crypto SHA-256 & AES-256-GCM Decryption
+  // WebCrypto Helpers (SHA-256 + PBKDF2-HMAC-SHA256 + AES-256-GCM)
   // --------------------------------------------------------------------------
   function b64ToBytes(b64) {
     const bin = atob(b64);
@@ -101,52 +76,66 @@
     return out;
   }
 
-  async function sha256Hex(str) {
-    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-    return Array.from(new Uint8Array(buf))
+  async function sha256Hex(text) {
+    const data = new TextEncoder().encode(text);
+    const digest = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(digest))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
   }
 
-  async function decryptAesGcmEnvelope(passphrase, saltB64, ivB64, cipherB64) {
-    const salt = b64ToBytes(saltB64);
-    const iv = b64ToBytes(ivB64);
-    const cipherBytes = b64ToBytes(cipherB64);
-    const keyMat = await crypto.subtle.importKey(
+  async function deriveAesKeyFromPassphrase(passphrase, saltBytes) {
+    const baseKey = await crypto.subtle.importKey(
       "raw",
       new TextEncoder().encode(passphrase),
       "PBKDF2",
       false,
       ["deriveKey"]
     );
-    const aesKey = await crypto.subtle.deriveKey(
-      { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
-      keyMat,
+    return crypto.subtle.deriveKey(
+      { name: "PBKDF2", salt: saltBytes, iterations: 100000, hash: "SHA-256" },
+      baseKey,
       { name: "AES-GCM", length: 256 },
       false,
       ["decrypt"]
     );
-    const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, cipherBytes);
+  }
+
+  async function decryptAesGcmEnvelope(passphrase, saltB64, ivB64, cipherB64) {
+    const salt = b64ToBytes(saltB64);
+    const iv = b64ToBytes(ivB64);
+    const cipherBytes = b64ToBytes(cipherB64);
+    const key = await deriveAesKeyFromPassphrase(passphrase, salt);
+    const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, cipherBytes);
     return new TextDecoder().decode(plainBuf);
   }
 
+  // --------------------------------------------------------------------------
+  // Google Drive Direct Helpers
+  // --------------------------------------------------------------------------
   function extractGoogleDriveId(url) {
     const u = String(url || "").trim();
     let m = u.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]{10,})/);
-    if (!m) {
-      m = u.match(
-        /drive\.(?:google|usercontent)\.com\/(?:open|uc|download)\?.*?[?&]?id=([a-zA-Z0-9_-]{10,})/
-      );
-    }
+    if (!m) m = u.match(/drive\.(?:google|usercontent)\.com\/(?:open|uc|download)\?.*?[?&]?id=([a-zA-Z0-9_-]{10,})/);
     return m ? m[1] : "";
+  }
+
+  function normalizePublicCoverUrl(url) {
+    const u = String(url || "").trim();
+    if (!u) return "";
+    if (u.startsWith("data:") || u.startsWith("blob:")) return u;
+    if (u.startsWith("/") && API_BASE) return `${API_BASE}${u}`;
+    const driveId = extractGoogleDriveId(u);
+    if (driveId) return `https://lh3.googleusercontent.com/d/${driveId}=w1280`;
+    return u;
   }
 
   function normalizeExternalDownloadUrl(url) {
     const u = String(url || "").trim();
     if (!u) return "";
-    const fid = extractGoogleDriveId(u);
-    if (fid) {
-      return `https://drive.usercontent.google.com/download?id=${fid}&export=download&confirm=t`;
+    const driveId = extractGoogleDriveId(u);
+    if (driveId) {
+      return `https://drive.usercontent.google.com/download?id=${driveId}&export=download&confirm=t`;
     }
     if (u.includes("dropbox.com/")) {
       const cleaned = u.replace(/[?&]dl=0\b/, "");
@@ -155,12 +144,16 @@
     return u;
   }
 
+  function sleepMs(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
   // --------------------------------------------------------------------------
-  // Local Unlock Receipt Cache (Never stores expiring blob: URLs!)
+  // Local Device Receipt Cache
   // --------------------------------------------------------------------------
   function getSavedUnlocks() {
     try {
-      const raw = localStorage.getItem(UNLOCK_STORAGE_KEY);
+      const raw = localStorage.getItem(UNLOCK_RECEIPTS_KEY);
       if (!raw) return {};
       const parsed = JSON.parse(raw);
       const now = Date.now();
@@ -171,114 +164,186 @@
           changed = true;
         }
       }
-      if (changed) localStorage.setItem(UNLOCK_STORAGE_KEY, JSON.stringify(parsed));
+      if (changed) localStorage.setItem(UNLOCK_RECEIPTS_KEY, JSON.stringify(parsed));
       return parsed;
     } catch (_) {
       return {};
     }
   }
 
-  function saveUnlockReceipt(gameId, receiptData) {
+  function saveUnlockReceipt(gameId, receipt) {
+    const map = getSavedUnlocks();
+    map[gameId] = {
+      ...receipt,
+      unlockedAt: receipt.unlockedAt || Date.now(),
+      expiresAt: Date.now() + (receipt.expiresInMinutes || 10080) * 60 * 1000
+    };
     try {
-      const map = getSavedUnlocks();
-      const ttlMs = Number(receiptData.expiresInMinutes || 10080) * 60 * 1000; // 7 days local cache
-      const copy = { ...receiptData };
-      // Never persist ephemeral blob: URLs across reloads (causes Chrome "No permission" error!)
-      if (copy.downloadUrl && String(copy.downloadUrl).startsWith("blob:")) {
-        delete copy.downloadUrl;
-      }
-      map[gameId] = {
-        ...copy,
-        unlockedAt: Date.now(),
-        expiresAt: Date.now() + ttlMs
-      };
-      localStorage.setItem(UNLOCK_STORAGE_KEY, JSON.stringify(map));
+      localStorage.setItem(UNLOCK_RECEIPTS_KEY, JSON.stringify(map));
     } catch (_) {}
   }
 
   function getUnlockForGame(gameId) {
-    if (currentPlayerPurchases && currentPlayerPurchases[gameId]) {
-      return {
-        gameId,
-        method: currentPlayerPurchases[gameId].unlockMethod || "account_purchase",
-        paymentId: currentPlayerPurchases[gameId].paymentId || "",
-        rawDownloadRef: currentPlayerPurchases[gameId].downloadRef || "",
-        fromCloudAccount: true
-      };
+    if (currentVerifiedPlayer && currentPlayerPurchases && currentPlayerPurchases[gameId]) {
+      return currentPlayerPurchases[gameId];
     }
     const map = getSavedUnlocks();
     return map[gameId] || null;
   }
 
+  function normalizePrivateKeyClean(raw) {
+    return String(raw || "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+  }
+
+  function formatPrivateKeyInput(raw) {
+    const clean = normalizePrivateKeyClean(raw);
+    if (clean.startsWith("DREV") && clean.length <= 16) {
+      const parts = ["DREV"];
+      const rest = clean.slice(4);
+      for (let i = 0; i < rest.length; i += 4) parts.push(rest.slice(i, i + 4));
+      return parts.filter(Boolean).join("-");
+    }
+    const groups = clean.match(/.{1,4}/g) || [];
+    return groups.join("-");
+  }
+
+  function formatPrice(price, currency, isFree) {
+    if (isFree || Number(price) <= 0) return "FREE";
+    const cur = String(currency || "USD").toUpperCase();
+    const num = Number(price);
+    if (cur === "INR") return `₹${num % 1 === 0 ? num.toFixed(0) : num.toFixed(2)}`;
+    return `$${num.toFixed(2)}`;
+  }
+
   // --------------------------------------------------------------------------
-  // Firebase SDK Clients (Realtime DB + Player Auth)
+  // Firebase SDK Loader (Auth + Realtime Database)
   // --------------------------------------------------------------------------
-  let fbClientPromise = null;
+  let fbServicesCache = null;
+
   async function getFirebasePublicServices() {
     if (!isFirebaseConfigured()) return null;
-    if (fbClientPromise) return fbClientPromise;
+    if (fbServicesCache) return fbServicesCache;
+
     const ver = CFG.FIREBASE_SDK_VERSION || "11.0.2";
     const base = `https://www.gstatic.com/firebasejs/${ver}`;
-    fbClientPromise = (async () => {
-      const [appMod, authMod, dbMod] = await Promise.all([
-        import(`${base}/firebase-app.js`),
-        import(`${base}/firebase-auth.js`),
-        import(`${base}/firebase-database.js`)
-      ]);
-      const app = appMod.getApps().length
-        ? appMod.getApp()
-        : appMod.initializeApp(CFG.FIREBASE_CONFIG);
-      const auth = authMod.getAuth(app);
-      const rtdb = isRealtimeDbConfigured() ? dbMod.getDatabase(app) : null;
-      return { app, auth, rtdb, appMod, authMod, dbMod };
-    })();
-    return fbClientPromise;
+    const [appMod, authMod, dbMod] = await Promise.all([
+      import(`${base}/firebase-app.js`),
+      import(`${base}/firebase-auth.js`),
+      import(`${base}/firebase-database.js`)
+    ]);
+
+    const app = appMod.getApps().length
+      ? appMod.getApp()
+      : appMod.initializeApp(CFG.FIREBASE_CONFIG);
+
+    fbServicesCache = {
+      app,
+      auth: authMod.getAuth(app),
+      rtdb: isRealtimeDbConfigured() ? dbMod.getDatabase(app) : null,
+      authMod,
+      dbMod
+    };
+    return fbServicesCache;
   }
 
   async function getPublicRealtimeDb() {
     const svc = await getFirebasePublicServices();
-    if (!svc || !svc.rtdb) return null;
-    return { rtdb: svc.rtdb, dbMod: svc.dbMod };
-  }
-
-  let fsPromise = null;
-  async function getPublicFirestore() {
-    if (!isFirebaseConfigured()) return null;
-    if (fsPromise) return fsPromise;
-    const ver = CFG.FIREBASE_SDK_VERSION || "11.0.2";
-    const base = `https://www.gstatic.com/firebasejs/${ver}`;
-    fsPromise = (async () => {
-      const svc = await getFirebasePublicServices();
-      const fsMod = await import(`${base}/firebase-firestore.js`);
-      return { db: fsMod.getFirestore(svc.app), fsMod };
-    })();
-    return fsPromise;
+    return svc && svc.rtdb ? { rtdb: svc.rtdb, dbMod: svc.dbMod } : null;
   }
 
   // --------------------------------------------------------------------------
-  // PLAYER ACCOUNT AUTH + MANDATORY EMAIL LINK VERIFICATION (/users/{uid})
+  // Persistent Cross-Tab Cooldown & Pending Name Helpers
+  // --------------------------------------------------------------------------
+  function getVerifyCooldownRemainingSec(email) {
+    try {
+      const key = VERIFY_COOLDOWN_PREFIX + String(email || "").trim().toLowerCase();
+      const last = Number(localStorage.getItem(key) || 0);
+      if (!last) return 0;
+      const diff = VERIFY_COOLDOWN_MS - (Date.now() - last);
+      return diff > 0 ? Math.ceil(diff / 1000) : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function markVerificationSentNow(email) {
+    try {
+      const key = VERIFY_COOLDOWN_PREFIX + String(email || "").trim().toLowerCase();
+      localStorage.setItem(key, String(Date.now()));
+    } catch (_) {}
+  }
+
+  function savePendingSignupName(email, name) {
+    if (!email || !name) return;
+    try {
+      localStorage.setItem(PENDING_NAME_PREFIX + email.trim().toLowerCase(), name.trim());
+    } catch (_) {}
+  }
+
+  function getSavedPendingSignupName(email) {
+    if (!email) return "";
+    try {
+      return localStorage.getItem(PENDING_NAME_PREFIX + email.trim().toLowerCase()) || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  async function safeSendVerificationEmail(authMod, user, forceManualResend = false) {
+    const email = (user.email || "").trim().toLowerCase();
+    const waitSec = getVerifyCooldownRemainingSec(email);
+    if (waitSec > 0) {
+      if (forceManualResend) {
+        throw new Error(
+          `Verification email was already sent! Please check your Inbox & Spam folder, or wait ${waitSec}s before resending.`
+        );
+      }
+      return { sent: false, alreadySentRecently: true, waitSec };
+    }
+
+    try {
+      // CRITICAL: Call sendEmailVerification(user) with NO actionCodeSettings!
+      // Passing custom continueUrl causes Firebase to block sending with auth/unauthorized-continue-uri.
+      await authMod.sendEmailVerification(user);
+      markVerificationSentNow(email);
+      return { sent: true, waitSec: Math.ceil(VERIFY_COOLDOWN_MS / 1000) };
+    } catch (err) {
+      const code = String(err.code || err.message || "");
+      if (code.includes("auth/too-many-requests")) {
+        markVerificationSentNow(email);
+        if (forceManualResend) {
+          throw new Error(
+            "Firebase already sent a verification link to your email recently! Please check your Inbox and Spam/Junk folder — as soon as you click that link, your account will open automatically."
+          );
+        }
+        return { sent: false, alreadySentRecently: true, rateLimitedGracefully: true, waitSec: 90 };
+      }
+      throw err;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // PLAYER ACCOUNT AUTH + LIVE AUTO-VERIFICATION + DIRECT DB PROFILE FETCH
   // --------------------------------------------------------------------------
   let currentVerifiedPlayer = null;
+  let currentDbProfile = null; // Authoritative { name, email, ... } fetched directly from /users/{uid}/profile
   let pendingVerificationEmail = "";
   let currentPlayerPurchases = {};
   let unsubPurchasesRef = null;
+  let unsubProfileRef = null;
+  let autoVerifyInterval = null;
+  let activatingVerifiedSession = false;
   const authSubscribers = new Set();
   let authWatcherStarted = false;
-
-  function buildPlayerSummary(user) {
-    if (!user || !user.emailVerified) return null;
-    return {
-      uid: user.uid,
-      email: (user.email || "").toLowerCase(),
-      displayName: user.displayName || (user.email ? user.email.split("@")[0] : "Player"),
-      emailVerified: Boolean(user.emailVerified)
-    };
-  }
 
   function emitAuthState() {
     const snapshot = {
       user: currentVerifiedPlayer,
+      dbProfile: currentDbProfile ? { ...currentDbProfile } : null,
       pendingVerificationEmail,
+      cooldownSec: pendingVerificationEmail ? getVerifyCooldownRemainingSec(pendingVerificationEmail) : 0,
       purchases: { ...currentPlayerPurchases }
     };
     authSubscribers.forEach((cb) => {
@@ -288,27 +353,202 @@
     });
   }
 
-  async function ensureVerifiedUserNodeInDatabase(user, optionalDisplayName) {
-    if (!user || !user.emailVerified || !isRealtimeDbConfigured()) return;
+  function stopAutoVerificationWatcher() {
+    if (autoVerifyInterval) {
+      clearInterval(autoVerifyInterval);
+      autoVerifyInterval = null;
+    }
+  }
+
+  // Automatically polls Firebase every 2.0s + on tab focus/visibility — NO manual button needed!
+  function startLiveAutoVerificationWatcher() {
+    if (autoVerifyInterval) return;
+
+    const checkNow = async () => {
+      if (activatingVerifiedSession || currentVerifiedPlayer) {
+        stopAutoVerificationWatcher();
+        return;
+      }
+      try {
+        const svc = await getFirebasePublicServices();
+        if (!svc || !svc.auth.currentUser) {
+          stopAutoVerificationWatcher();
+          return;
+        }
+        await svc.authMod.reload(svc.auth.currentUser);
+        if (svc.auth.currentUser.emailVerified) {
+          stopAutoVerificationWatcher();
+          await activateVerifiedPlayerSession(svc.auth.currentUser);
+        }
+      } catch (_) {}
+    };
+
+    autoVerifyInterval = setInterval(checkNow, 2000);
+
+    if (typeof window !== "undefined" && !window.__drevFocusVerifyBoundV8) {
+      window.__drevFocusVerifyBoundV8 = true;
+      window.addEventListener("focus", () => {
+        if (pendingVerificationEmail && !currentVerifiedPlayer) checkNow();
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && pendingVerificationEmail && !currentVerifiedPlayer) {
+          checkNow();
+        }
+      });
+    }
+  }
+
+  // Explicitly fetches the player's Profile (Name & Email) directly from Firebase Realtime Database!
+  async function fetchPlayerProfileFromDb() {
+    if (!isRealtimeDbConfigured()) return currentDbProfile;
+    const svc = await getFirebasePublicServices();
+    if (!svc || !svc.auth.currentUser || !svc.auth.currentUser.emailVerified) return currentDbProfile;
+
+    const uid = svc.auth.currentUser.uid;
+    const { rtdb, dbMod } = svc;
+    const profRef = dbMod.ref(rtdb, `users/${uid}/profile`);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) {
+          await svc.auth.currentUser.getIdToken(true);
+          await sleepMs(450 * attempt);
+        }
+        const snap = await dbMod.get(profRef);
+        if (snap.exists()) {
+          const val = snap.val();
+          currentDbProfile = {
+            ...val,
+            name: val.name || val.displayName || svc.auth.currentUser.displayName || "Player",
+            email: val.email || (svc.auth.currentUser.email || "").toLowerCase(),
+            fetchedFromDatabase: true,
+            dbRulesWarning: false
+          };
+          if (currentVerifiedPlayer) {
+            currentVerifiedPlayer.name = currentDbProfile.name;
+            currentVerifiedPlayer.displayName = currentDbProfile.name;
+            currentVerifiedPlayer.email = currentDbProfile.email;
+          }
+          emitAuthState();
+          return currentDbProfile;
+        }
+        break;
+      } catch (_) {}
+    }
+    return currentDbProfile;
+  }
+
+  // Writes verified player info to /users/{uid}/profile AND reads Name & Email directly back from Firebase DB
+  // with automatic 3x retry to handle the RTDB WebSocket JWT token-propagation window right after verification!
+  async function writeAndFetchPlayerProfileFromDatabase(user, explicitName) {
+    const emailLower = (user.email || "").trim().toLowerCase();
+    const pendingName = explicitName || getSavedPendingSignupName(emailLower) || user.displayName || "";
+    const fallbackName = pendingName || (emailLower ? emailLower.split("@")[0] : "Player");
+
+    if (!isRealtimeDbConfigured()) {
+      currentDbProfile = {
+        uid: user.uid,
+        name: fallbackName,
+        displayName: fallbackName,
+        email: emailLower,
+        emailVerified: true,
+        fetchedFromDatabase: false,
+        dbRulesWarning: false
+      };
+      return currentDbProfile;
+    }
+
     const { rtdb, dbMod } = await getPublicRealtimeDb();
-    // Force fresh JWT so auth.token.email_verified === true in Firebase Rules!
     await user.getIdToken(true);
+    await sleepMs(250); // Allow Firebase RTDB WebSocket to apply refreshed email_verified=true JWT
+
     const profRef = dbMod.ref(rtdb, `users/${user.uid}/profile`);
-    const existingSnap = await dbMod.get(profRef).catch(() => null);
-    const prev = existingSnap && existingSnap.exists() ? existingSnap.val() : {};
-    const nameToSave =
-      optionalDisplayName ||
-      user.displayName ||
-      prev.displayName ||
-      (user.email ? user.email.split("@")[0] : "Player");
-    await dbMod.set(profRef, {
+    let lastDbErr = null;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) {
+          await user.getIdToken(true);
+          await sleepMs(500 * attempt);
+        }
+
+        const existingSnap = await dbMod.get(profRef).catch(() => null);
+        const existingVal = existingSnap && existingSnap.exists() ? existingSnap.val() : null;
+
+        const finalName =
+          explicitName ||
+          (existingVal && (existingVal.name || existingVal.displayName)) ||
+          pendingName ||
+          fallbackName;
+
+        const profilePayload = {
+          uid: user.uid,
+          name: finalName,
+          displayName: finalName,
+          email: emailLower,
+          emailVerified: true,
+          createdAt: (existingVal && existingVal.createdAt) || Date.now(),
+          lastLoginAt: Date.now()
+        };
+
+        await dbMod.set(profRef, profilePayload);
+
+        // Authoritative read straight back from Firebase Realtime Database!
+        const freshDbSnap = await dbMod.get(profRef);
+        const dbData = freshDbSnap.exists() ? freshDbSnap.val() : profilePayload;
+
+        currentDbProfile = {
+          ...dbData,
+          name: dbData.name || dbData.displayName || finalName,
+          email: dbData.email || emailLower,
+          fetchedFromDatabase: true,
+          dbRulesWarning: false
+        };
+
+        try {
+          localStorage.removeItem(PENDING_NAME_PREFIX + emailLower);
+        } catch (_) {}
+
+        if (unsubProfileRef) {
+          unsubProfileRef();
+          unsubProfileRef = null;
+        }
+        unsubProfileRef = dbMod.onValue(profRef, (snap) => {
+          if (snap.exists()) {
+            const v = snap.val();
+            currentDbProfile = {
+              ...v,
+              name: v.name || v.displayName || finalName,
+              email: v.email || emailLower,
+              fetchedFromDatabase: true,
+              dbRulesWarning: false
+            };
+            if (currentVerifiedPlayer) {
+              currentVerifiedPlayer.name = currentDbProfile.name;
+              currentVerifiedPlayer.displayName = currentDbProfile.name;
+              currentVerifiedPlayer.email = currentDbProfile.email;
+            }
+            emitAuthState();
+          }
+        });
+
+        return currentDbProfile;
+      } catch (err) {
+        lastDbErr = err;
+      }
+    }
+
+    // Fallback if Owner hasn't clicked "Copy Firebase Rules -> Publish" for /users yet
+    currentDbProfile = {
       uid: user.uid,
-      email: (user.email || "").toLowerCase(),
-      displayName: nameToSave,
+      name: fallbackName,
+      displayName: fallbackName,
+      email: emailLower,
       emailVerified: true,
-      createdAt: prev.createdAt || Date.now(),
-      lastLoginAt: Date.now()
-    });
+      fetchedFromDatabase: false,
+      dbRulesWarning: Boolean(lastDbErr)
+    };
+    return currentDbProfile;
   }
 
   async function bindPlayerPurchasesListener(user) {
@@ -322,9 +562,7 @@
       return;
     }
     const { rtdb, dbMod } = await getPublicRealtimeDb();
-    await user.getIdToken(true).catch(() => {});
 
-    // Sync any local browser unlocks made earlier into user's verified cloud account
     const localMap = getSavedUnlocks();
     for (const gid of Object.keys(localMap)) {
       const rec = localMap[gid];
@@ -357,223 +595,184 @@
         currentPlayerPurchases = snap.exists() ? snap.val() || {} : {};
         emitAuthState();
       },
-      () => {
-        emitAuthState();
-      }
+      () => emitAuthState()
     );
   }
 
-  async function initPlayerAuthWatcher() {
-    if (authWatcherStarted || !isFirebaseConfigured()) return;
+  async function activateVerifiedPlayerSession(user, explicitName) {
+    if (!user || !user.emailVerified || activatingVerifiedSession) return;
+    activatingVerifiedSession = true;
+    try {
+      stopAutoVerificationWatcher();
+      pendingVerificationEmail = "";
+      const dbProf = await writeAndFetchPlayerProfileFromDatabase(user, explicitName);
+      currentVerifiedPlayer = {
+        uid: user.uid,
+        name: dbProf.name,
+        displayName: dbProf.name,
+        email: dbProf.email,
+        emailVerified: true
+      };
+      await bindPlayerPurchasesListener(user);
+      emitAuthState();
+    } finally {
+      activatingVerifiedSession = false;
+    }
+  }
+
+  async function startPlayerAuthWatcher() {
+    if (authWatcherStarted) return;
     authWatcherStarted = true;
+    if (!isFirebaseConfigured()) {
+      emitAuthState();
+      return;
+    }
     try {
       const { auth, authMod } = await getFirebasePublicServices();
       authMod.onAuthStateChanged(auth, async (user) => {
         if (!user) {
+          stopAutoVerificationWatcher();
           currentVerifiedPlayer = null;
+          currentDbProfile = null;
+          currentPlayerPurchases = {};
+          if (unsubProfileRef) {
+            unsubProfileRef();
+            unsubProfileRef = null;
+          }
           if (unsubPurchasesRef) {
             unsubPurchasesRef();
             unsubPurchasesRef = null;
           }
-          currentPlayerPurchases = {};
           emitAuthState();
           return;
         }
-        try {
-          await authMod.reload(user);
-        } catch (_) {}
-        if (user.emailVerified) {
-          pendingVerificationEmail = "";
-          currentVerifiedPlayer = buildPlayerSummary(user);
-          await ensureVerifiedUserNodeInDatabase(user).catch(() => {});
-          await bindPlayerPurchasesListener(user);
-        } else {
-          // Account NOT active until email verification link is clicked!
+
+        await authMod.reload(user).catch(() => {});
+
+        // ONLY verified email accounts enter the authenticated state & write to /users/{uid}!
+        if (!user.emailVerified) {
           currentVerifiedPlayer = null;
-          pendingVerificationEmail = (user.email || "").toLowerCase();
+          currentDbProfile = null;
           currentPlayerPurchases = {};
+          pendingVerificationEmail = user.email || pendingVerificationEmail;
+          startLiveAutoVerificationWatcher();
           emitAuthState();
+          return;
         }
+
+        await activateVerifiedPlayerSession(user);
       });
-    } catch (_) {}
+    } catch (_) {
+      emitAuthState();
+    }
   }
 
-  function subscribePlayerAuth(onChange) {
-    authSubscribers.add(onChange);
-    onChange({
+  function subscribePlayerAuth(cb) {
+    authSubscribers.add(cb);
+    startPlayerAuthWatcher();
+    cb({
       user: currentVerifiedPlayer,
+      dbProfile: currentDbProfile ? { ...currentDbProfile } : null,
       pendingVerificationEmail,
+      cooldownSec: pendingVerificationEmail ? getVerifyCooldownRemainingSec(pendingVerificationEmail) : 0,
       purchases: { ...currentPlayerPurchases }
     });
-    initPlayerAuthWatcher();
-    return () => authSubscribers.delete(onChange);
+    return () => authSubscribers.delete(cb);
   }
 
-  function getCurrentPlayer() {
-    return currentVerifiedPlayer;
-  }
-
-  function getPlayerPurchases() {
-    return { ...currentPlayerPurchases };
-  }
-
-  function hasGameUpdateAvailable(game, purchaseRecord) {
-    if (!game || !purchaseRecord) return false;
-    const latestTs = Number(game.buildUpdatedAt || 0);
-    const downloadedTs = Number(
-      purchaseRecord.lastDownloadedBuildUpdatedAt || purchaseRecord.purchasedAt || 0
-    );
-    if (latestTs > 0 && latestTs > downloadedTs + 2000) return true;
-    const liveVer = String(game.version || "").trim();
-    const dlVer = String(
-      purchaseRecord.lastDownloadedVersion || purchaseRecord.purchasedVersion || ""
-    ).trim();
-    if (liveVer && dlVer && liveVer !== dlVer && latestTs >= downloadedTs) return true;
-    return false;
-  }
-
+  // 1. SIGN UP: Creates credential (or recovers existing unverified account), sends verification email,
+  //    and starts the 2.0s live auto-verification watcher so the account opens automatically!
   async function registerPlayerAccount({ displayName, email, password }) {
     if (!isFirebaseConfigured()) {
-      throw new Error("Firebase Authentication is not configured in js/store-config.js yet.");
+      throw new Error("Firebase is not configured in js/store-config.js yet.");
     }
     const cleanEmail = String(email || "").trim().toLowerCase();
     const cleanName = String(displayName || "").trim();
-    if (!cleanEmail || !cleanEmail.includes("@")) {
-      throw new Error("Please enter a valid email address.");
-    }
-    if (!password || String(password).length < 6) {
+    if (!cleanName) throw new Error("Please enter your Name.");
+    if (!cleanEmail) throw new Error("Please enter a valid email address.");
+    if (!password || password.length < 6) {
       throw new Error("Password must be at least 6 characters long.");
     }
 
+    savePendingSignupName(cleanEmail, cleanName);
     const { auth, authMod } = await getFirebasePublicServices();
-    const actionSettings = {
-      url: window.location.origin + window.location.pathname + "#account",
-      handleCodeInApp: false
-    };
 
+    let targetUser = null;
     try {
       const cred = await authMod.createUserWithEmailAndPassword(auth, cleanEmail, password);
-      if (cleanName) {
-        await authMod.updateProfile(cred.user, { displayName: cleanName }).catch(() => {});
-      }
-      await authMod.sendEmailVerification(cred.user, actionSettings);
-      pendingVerificationEmail = cleanEmail;
-      currentVerifiedPlayer = null;
-      emitAuthState();
-      return {
-        status: "verification_sent",
-        email: cleanEmail
-      };
+      targetUser = cred.user;
     } catch (err) {
       const code = String(err.code || err.message || "");
-      // If user already started signup earlier with same email+password but hasn't verified yet, resend link cleanly!
       if (code.includes("auth/email-already-in-use")) {
+        // Smart recovery: if this user already started signup earlier and wasn't verified yet,
+        // sign them in with the password they entered so they don't get stuck!
         try {
-          const existingCred = await authMod.signInWithEmailAndPassword(auth, cleanEmail, password);
-          await authMod.reload(existingCred.user);
-          if (!existingCred.user.emailVerified) {
-            await authMod.sendEmailVerification(existingCred.user, actionSettings);
-            pendingVerificationEmail = cleanEmail;
-            currentVerifiedPlayer = null;
-            emitAuthState();
-            return { status: "verification_sent", email: cleanEmail };
-          }
-          throw new Error("EXISTING_VERIFIED");
-        } catch (innerErr) {
-          if (String(innerErr.message) === "EXISTING_VERIFIED") {
-            throw new Error(
-              "This email is already verified and registered! Please switch to the 'Sign In' tab."
-            );
-          }
+          const signCred = await authMod.signInWithEmailAndPassword(auth, cleanEmail, password);
+          await authMod.reload(signCred.user).catch(() => {});
+          targetUser = signCred.user;
+        } catch (_) {
           throw new Error(
-            "An account with this email already exists. Please switch to 'Sign In' (or use 'Forgot Password')."
+            "This email is already registered! Switch to the 'Sign In' tab and enter your password (or click 'Forgot Password?')."
           );
         }
+      } else if (code.includes("auth/invalid-email")) {
+        throw new Error("Please enter a valid email address.");
+      } else if (code.includes("auth/operation-not-allowed")) {
+        throw new Error(
+          "Enable Email/Password in Firebase Console -> Authentication -> Sign-in method -> Email/Password -> Enable!"
+        );
+      } else if (code.includes("auth/too-many-requests")) {
+        throw new Error(
+          "Firebase temporarily rate-limited requests from this browser. Wait 60 seconds and check your email Inbox & Spam folder."
+        );
+      } else {
+        throw err;
       }
-      if (code.includes("auth/invalid-email")) {
-        throw new Error("Invalid email address format.");
-      }
-      if (code.includes("auth/weak-password")) {
-        throw new Error("Password is too weak — please use at least 6 characters.");
-      }
-      throw new Error(err.message || "Could not send verification email.");
     }
-  }
 
-  async function resendPlayerVerificationLink() {
-    if (!isFirebaseConfigured()) throw new Error("Firebase Auth not configured.");
-    const { auth, authMod } = await getFirebasePublicServices();
-    if (!auth.currentUser) {
-      throw new Error("Please enter your email and password again to resend the verification link.");
+    if (cleanName && targetUser.displayName !== cleanName) {
+      await authMod.updateProfile(targetUser, { displayName: cleanName }).catch(() => {});
     }
-    await authMod.reload(auth.currentUser);
-    if (auth.currentUser.emailVerified) {
-      return checkAndCompletePlayerVerification();
-    }
-    await authMod.sendEmailVerification(auth.currentUser, {
-      url: window.location.origin + window.location.pathname + "#account",
-      handleCodeInApp: false
-    });
-    return { status: "resent", email: (auth.currentUser.email || "").toLowerCase() };
-  }
 
-  async function checkAndCompletePlayerVerification() {
-    if (!isFirebaseConfigured()) return { verified: false };
-    const { auth, authMod } = await getFirebasePublicServices();
-    const user = auth.currentUser;
-    if (!user) return { verified: false };
-    await authMod.reload(user);
-    if (!user.emailVerified) {
-      return { verified: false, email: (user.email || "").toLowerCase() };
+    // If already verified, write/fetch DB profile and enter account immediately!
+    if (targetUser.emailVerified) {
+      await activateVerifiedPlayerSession(targetUser, cleanName);
+      return {
+        alreadyVerified: true,
+        verificationSent: false,
+        email: cleanEmail,
+        user: currentVerifiedPlayer,
+        dbProfile: currentDbProfile
+      };
     }
-    // Email is now verified! Create account profile inside /users/{uid} in Firebase!
-    pendingVerificationEmail = "";
-    await ensureVerifiedUserNodeInDatabase(user);
-    currentVerifiedPlayer = buildPlayerSummary(user);
-    await bindPlayerPurchasesListener(user);
+
+    const sendRes = await safeSendVerificationEmail(authMod, targetUser, false);
+    pendingVerificationEmail = cleanEmail;
+    currentVerifiedPlayer = null;
+    currentDbProfile = null;
+    startLiveAutoVerificationWatcher();
     emitAuthState();
-    return { verified: true, user: currentVerifiedPlayer };
+
+    return {
+      verificationSent: true,
+      sent: Boolean(sendRes.sent),
+      waitSec: sendRes.waitSec || 90,
+      email: cleanEmail
+    };
   }
 
+  // 2. SIGN IN: Enters account if verified; otherwise activates live auto-verification watcher
+  //    WITHOUT spamming sendEmailVerification if one was already sent recently!
   async function loginPlayerAccount({ email, password }) {
     if (!isFirebaseConfigured()) {
-      throw new Error("Firebase Authentication is not configured in js/store-config.js yet.");
+      throw new Error("Firebase is not configured in js/store-config.js yet.");
     }
     const cleanEmail = String(email || "").trim().toLowerCase();
-    if (!cleanEmail || !password) {
-      throw new Error("Please enter both your email and password.");
-    }
     const { auth, authMod } = await getFirebasePublicServices();
+
+    let cred;
     try {
-      const cred = await authMod.signInWithEmailAndPassword(auth, cleanEmail, password);
-      await authMod.reload(cred.user);
-
-      if (!cred.user.emailVerified) {
-        pendingVerificationEmail = cleanEmail;
-        currentVerifiedPlayer = null;
-        await authMod
-          .sendEmailVerification(cred.user, {
-            url: window.location.origin + window.location.pathname + "#account",
-            handleCodeInApp: false
-          })
-          .catch(() => {});
-        emitAuthState();
-        return {
-          verified: false,
-          status: "verification_required",
-          email: cleanEmail
-        };
-      }
-
-      pendingVerificationEmail = "";
-      await ensureVerifiedUserNodeInDatabase(cred.user);
-      currentVerifiedPlayer = buildPlayerSummary(cred.user);
-      await bindPlayerPurchasesListener(cred.user);
-      emitAuthState();
-      return {
-        verified: true,
-        user: currentVerifiedPlayer
-      };
+      cred = await authMod.signInWithEmailAndPassword(auth, cleanEmail, password);
     } catch (err) {
       const code = String(err.code || err.message || "");
       if (
@@ -581,140 +780,228 @@
         code.includes("auth/user-not-found") ||
         code.includes("auth/wrong-password")
       ) {
-        throw new Error("Incorrect email or password. Please check your credentials or Sign Up first.");
+        throw new Error("Incorrect email or password (or create a new account under Sign Up).");
       }
       if (code.includes("auth/too-many-requests")) {
-        throw new Error("Too many failed attempts. Please wait a minute or reset your password.");
+        throw new Error("Too many login attempts. Please wait 60 seconds and try again.");
       }
-      throw new Error(err.message || "Sign in failed.");
+      throw err;
     }
+
+    await authMod.reload(cred.user).catch(() => {});
+
+    if (!cred.user.emailVerified) {
+      await safeSendVerificationEmail(authMod, cred.user, false).catch(() => {});
+      pendingVerificationEmail = cleanEmail;
+      currentVerifiedPlayer = null;
+      currentDbProfile = null;
+      startLiveAutoVerificationWatcher();
+      emitAuthState();
+      return {
+        verified: false,
+        needsEmailVerification: true,
+        email: cleanEmail
+      };
+    }
+
+    await activateVerifiedPlayerSession(cred.user);
+    return {
+      verified: true,
+      user: currentVerifiedPlayer,
+      dbProfile: currentDbProfile
+    };
+  }
+
+  async function resendPlayerVerificationLink() {
+    if (!isFirebaseConfigured()) throw new Error("Firebase not configured.");
+    const { auth, authMod } = await getFirebasePublicServices();
+    if (!auth.currentUser) {
+      throw new Error("Please sign in with your email and password first to resend the verification email.");
+    }
+    await authMod.reload(auth.currentUser).catch(() => {});
+    if (auth.currentUser.emailVerified) {
+      await activateVerifiedPlayerSession(auth.currentUser);
+      return { verified: true };
+    }
+    const res = await safeSendVerificationEmail(authMod, auth.currentUser, true);
+    emitAuthState();
+    return { resent: true, email: auth.currentUser.email, waitSec: res.waitSec || 90 };
+  }
+
+  async function updatePlayerProfileName(newName) {
+    const cleanName = String(newName || "").trim();
+    if (!cleanName) throw new Error("Please enter a valid name.");
+    const { auth, authMod } = await getFirebasePublicServices();
+    if (!auth.currentUser || !auth.currentUser.emailVerified) {
+      throw new Error("You must be signed in to a verified account.");
+    }
+    await authMod.updateProfile(auth.currentUser, { displayName: cleanName }).catch(() => {});
+    await writeAndFetchPlayerProfileFromDatabase(auth.currentUser, cleanName);
+    if (currentVerifiedPlayer) {
+      currentVerifiedPlayer.name = cleanName;
+      currentVerifiedPlayer.displayName = cleanName;
+    }
+    emitAuthState();
+    return currentDbProfile;
   }
 
   async function sendPlayerPasswordReset(email) {
+    if (!isFirebaseConfigured()) throw new Error("Firebase not configured.");
     const cleanEmail = String(email || "").trim().toLowerCase();
-    if (!cleanEmail || !cleanEmail.includes("@")) {
-      throw new Error("Enter your registered email address first so we can send a reset link.");
-    }
+    if (!cleanEmail) throw new Error("Enter your registered email address first.");
     const { auth, authMod } = await getFirebasePublicServices();
     await authMod.sendPasswordResetEmail(auth, cleanEmail);
-    return { sent: true, email: cleanEmail };
+    return { sent: true };
   }
 
   async function logoutPlayerAccount() {
-    if (!isFirebaseConfigured()) return;
-    const { auth, authMod } = await getFirebasePublicServices();
-    if (unsubPurchasesRef) {
-      unsubPurchasesRef();
-      unsubPurchasesRef = null;
+    stopAutoVerificationWatcher();
+    if (isFirebaseConfigured()) {
+      const { auth, authMod } = await getFirebasePublicServices();
+      await authMod.signOut(auth).catch(() => {});
     }
     currentVerifiedPlayer = null;
+    currentDbProfile = null;
     pendingVerificationEmail = "";
     currentPlayerPurchases = {};
-    await authMod.signOut(auth).catch(() => {});
     emitAuthState();
   }
 
-  async function savePurchaseToVerifiedAccount(gameId, purchaseMeta) {
+  async function savePurchaseToVerifiedAccount(gameId, receiptData) {
     if (!currentVerifiedPlayer || !isRealtimeDbConfigured()) return;
     const { auth } = await getFirebasePublicServices();
-    if (!auth.currentUser || !auth.currentUser.emailVerified) return;
-    await auth.currentUser.getIdToken(true).catch(() => {});
     const { rtdb, dbMod } = await getPublicRealtimeDb();
-    const gameObj = latestPublicGamesCache.find((g) => g.id === gameId) || {};
-    const ver = gameObj.version || "v1.0.0";
-    const buildTs = Number(gameObj.buildUpdatedAt || gameObj.updatedAt || Date.now());
+    if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+
+    const gObj = latestPublicGamesCache.find((g) => g.id === gameId) || {};
     const pRef = dbMod.ref(rtdb, `users/${auth.currentUser.uid}/purchases/${gameId}`);
     await dbMod.set(pRef, {
       gameId,
-      gameTitle: gameObj.title || purchaseMeta.gameTitle || "Studio Game",
-      coverImageUrl: gameObj.coverImageUrl || "",
-      unlockMethod: purchaseMeta.method || "razorpay",
-      paymentId: purchaseMeta.paymentId || "",
-      amount: Number(gameObj.price || 0),
-      currency: gameObj.currency || "USD",
+      gameTitle: gObj.title || receiptData.gameTitle || "Drevalith Game",
+      coverImageUrl: gObj.coverImageUrl || "",
+      unlockMethod: receiptData.method || "razorpay",
+      paymentId: receiptData.paymentId || "",
+      amount: Number(gObj.price || 0),
+      currency: gObj.currency || "USD",
       purchasedAt: Date.now(),
-      purchasedVersion: ver,
-      lastDownloadedVersion: ver,
-      lastDownloadedBuildUpdatedAt: buildTs,
-      downloadRef: purchaseMeta.rawDownloadRef || ""
+      purchasedVersion: gObj.version || "v1.0.0",
+      lastDownloadedVersion: gObj.version || "v1.0.0",
+      lastDownloadedBuildUpdatedAt: Number(gObj.buildUpdatedAt || gObj.updatedAt || Date.now()),
+      downloadRef: receiptData.rawDownloadRef || ""
     });
   }
 
   // --------------------------------------------------------------------------
-  // STREAMING .ZIP DOWNLOADER (Supports up to 500 MB RTDB Chunks + Google Drive!)
-  // Fixes "Could not download / No permission" completely!
+  // Update Detection & Reliable Chunked Capability Vault Downloader
   // --------------------------------------------------------------------------
-  async function resolveLatestRawDownloadRefForBuyer(game) {
-    if (!game) throw new Error("Game not found.");
+  function hasGameUpdateAvailable(game, purchaseRecord) {
+    if (!game || !purchaseRecord) return false;
+    const liveVer = String(game.version || "v1.0.0").trim();
+    const lastDlVer = String(
+      purchaseRecord.lastDownloadedVersion || purchaseRecord.purchasedVersion || "v1.0.0"
+    ).trim();
+    if (liveVer !== lastDlVer) return true;
+    const liveBuildTs = Number(game.buildUpdatedAt || 0);
+    const lastDlTs = Number(purchaseRecord.lastDownloadedBuildUpdatedAt || purchaseRecord.purchasedAt || 0);
+    return Boolean(liveBuildTs && lastDlTs && liveBuildTs > lastDlTs + 5000);
+  }
 
-    // Always prefer live buyer_gate/{gateHash} in Realtime DB so buyers get NEW GAME UPDATES!
+  async function resolveLatestRawDownloadRefForBuyer(game) {
+    if (game.isFree && game.freeDirectUrl) {
+      return game.freeDirectUrl;
+    }
+
     if (isRealtimeDbConfigured()) {
       try {
         const { rtdb, dbMod } = await getPublicRealtimeDb();
         const gateHash = await sha256Hex(`drevalith-buyer-gate-v4:${game.id}`);
         const gateSnap = await dbMod.get(dbMod.ref(rtdb, `buyer_gate/${gateHash}`));
         if (gateSnap.exists()) {
-          const gv = gateSnap.val();
-          const liveTarget = await decryptAesGcmEnvelope(
-            `drevalith-paid-unlock-v4:${game.id}:${gv.nonce || ""}`,
-            gv.saltB64,
-            gv.ivB64,
-            gv.cipherB64
-          );
-          if (liveTarget) return liveTarget;
+          const gVal = gateSnap.val();
+          if (gVal && gVal.nonce && gVal.cipherB64) {
+            const dec = await decryptAesGcmEnvelope(
+              `drevalith-paid-unlock-v4:${game.id}:${gVal.nonce}`,
+              gVal.saltB64,
+              gVal.ivB64,
+              gVal.cipherB64
+            );
+            if (dec) return dec;
+          }
         }
       } catch (_) {}
     }
 
-    if (game.isFree && game.freeDirectUrl) {
-      return game.freeDirectUrl;
-    }
-
     const pRec = currentPlayerPurchases && currentPlayerPurchases[game.id];
     if (pRec && pRec.downloadRef) return pRec.downloadRef;
-
     const localRec = getSavedUnlocks()[game.id];
     if (localRec && (localRec.rawDownloadRef || localRec.downloadUrl)) {
       return localRec.rawDownloadRef || localRec.downloadUrl;
     }
-
-    if (!isStaticGithubHostWithoutBackend() && game.isFree) {
-      return `${API_BASE}/api/download/${encodeURIComponent(game.id)}`;
-    }
-
-    throw new Error("Download archive is not linked yet. Please contact the studio or try again.");
+    throw new Error("Download archive link is not configured yet for this game.");
   }
 
   function triggerBrowserSaveBlob(blob, fileName) {
-    const blobUrl = URL.createObjectURL(blob);
+    const objUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = blobUrl;
+    a.href = objUrl;
     a.download = fileName || "Drevalith_Game_Build.zip";
     a.style.display = "none";
     document.body.appendChild(a);
     a.click();
     setTimeout(() => {
-      try {
-        document.body.removeChild(a);
-        URL.revokeObjectURL(blobUrl);
-      } catch (_) {}
-    }, 180000); // Keep alive 3 minutes so large 500 MB writes complete cleanly!
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objUrl);
+    }, 30000);
   }
 
   function triggerExternalDirectUrl(rawUrl) {
     const finalUrl = normalizeExternalDownloadUrl(rawUrl);
     const a = document.createElement("a");
     a.href = finalUrl;
-    a.target = "_blank";
     a.rel = "noopener noreferrer";
+    const isCrossOrigin =
+      finalUrl.startsWith("http") &&
+      typeof location !== "undefined" &&
+      !finalUrl.startsWith(location.origin);
+    if (isCrossOrigin) a.target = "_blank";
+    else a.download = "";
     a.style.display = "none";
     document.body.appendChild(a);
     a.click();
-    setTimeout(() => {
-      try {
-        document.body.removeChild(a);
-      } catch (_) {}
-    }, 2000);
+    setTimeout(() => document.body.removeChild(a), 1500);
+  }
+
+  async function downloadChunkedRtdbPath(rtdb, dbMod, baseNodePath, fallbackName, onProgress) {
+    if (typeof onProgress === "function") onProgress(2);
+    const metaSnap = await dbMod.get(dbMod.ref(rtdb, `${baseNodePath}/meta`));
+    if (!metaSnap.exists()) {
+      throw new Error("Game .ZIP archive was not found in Firebase Realtime Database.");
+    }
+    const meta = metaSnap.val();
+    const totalChunks = Number(meta.totalChunks || 0);
+    if (totalChunks <= 0) throw new Error("Invalid archive metadata.");
+
+    const byteParts = new Array(totalChunks);
+    for (let idx = 0; idx < totalChunks; idx++) {
+      let cSnap = null;
+      for (let retry = 0; retry < 3; retry++) {
+        try {
+          cSnap = await dbMod.get(dbMod.ref(rtdb, `${baseNodePath}/chunks/${idx}`));
+          if (cSnap && cSnap.exists()) break;
+        } catch (_) {}
+        await sleepMs(400 * (retry + 1));
+      }
+      if (!cSnap || !cSnap.exists()) {
+        throw new Error(`Archive chunk #${idx + 1}/${totalChunks} missing — please click Download again.`);
+      }
+      byteParts[idx] = b64ToBytes(cSnap.val());
+      if (typeof onProgress === "function") {
+        onProgress(Math.min(99, Math.round(((idx + 1) / totalChunks) * 100)));
+      }
+    }
+    if (typeof onProgress === "function") onProgress(100);
+    const zipBlob = new Blob(byteParts, { type: "application/zip" });
+    triggerBrowserSaveBlob(zipBlob, meta.fileName || fallbackName);
   }
 
   async function triggerVerifiedDownload(gameId, onProgress) {
@@ -737,63 +1024,18 @@
         game.version || "v1"
       ).replace(/[^a-zA-Z0-9._-]/g, "")}.zip`;
 
-    if (String(rawRef).startsWith("rtdb_blob:")) {
+    if (String(rawRef).startsWith("rtdb_gate_blob:")) {
+      const blobToken = String(rawRef).slice("rtdb_gate_blob:".length).trim();
+      const { rtdb, dbMod } = await getPublicRealtimeDb();
+      await downloadChunkedRtdbPath(rtdb, dbMod, `buyer_gate/${blobToken}`, safeFileName, onProgress);
+    } else if (String(rawRef).startsWith("rtdb_blob:")) {
       const blobToken = String(rawRef).slice("rtdb_blob:".length).trim();
       const { rtdb, dbMod } = await getPublicRealtimeDb();
-      let metaSnap;
-      try {
-        metaSnap = await dbMod.get(dbMod.ref(rtdb, `zip_blobs/${blobToken}/meta`));
-      } catch (permErr) {
-        throw new Error(
-          "Firebase Database Rules need a 1-click update to allow /zip_blobs downloads! (Studio Owner: click 'Copy Firebase Rules' in your console and Publish in Firebase.)"
-        );
-      }
-      if (!metaSnap.exists()) {
-        throw new Error("Game .ZIP archive was not found in database. Please wait if an update is uploading.");
-      }
-      const meta = metaSnap.val();
-      const totalChunks = Number(meta.totalChunks || 0);
-      if (totalChunks <= 0) throw new Error("Invalid archive metadata.");
-
-      const byteParts = new Array(totalChunks);
-      let completed = 0;
-      const CONCURRENCY = 3;
-
-      for (let i = 0; i < totalChunks; i += CONCURRENCY) {
-        const batchIndices = [];
-        for (let j = i; j < Math.min(i + CONCURRENCY, totalChunks); j++) {
-          batchIndices.push(j);
-        }
-        await Promise.all(
-          batchIndices.map(async (idx) => {
-            const cSnap = await dbMod.get(dbMod.ref(rtdb, `zip_blobs/${blobToken}/chunks/${idx}`));
-            if (!cSnap.exists()) {
-              throw new Error(`Archive chunk #${idx + 1} missing — please retry download.`);
-            }
-            byteParts[idx] = b64ToBytes(cSnap.val());
-            completed += 1;
-            if (typeof onProgress === "function") {
-              onProgress(Math.min(99, Math.round((completed / totalChunks) * 100)));
-            }
-          })
-        );
-      }
-
-      if (typeof onProgress === "function") onProgress(100);
-      const zipBlob = new Blob(byteParts, { type: "application/zip" });
-      triggerBrowserSaveBlob(zipBlob, meta.fileName || safeFileName);
+      await downloadChunkedRtdbPath(rtdb, dbMod, `zip_blobs/${blobToken}`, safeFileName, onProgress);
     } else if (String(rawRef).startsWith("rtdb_chunks:")) {
-      // Legacy chunk path support
       const chunkPath = String(rawRef).slice("rtdb_chunks:".length);
       const { rtdb, dbMod } = await getPublicRealtimeDb();
-      let snap;
-      try {
-        snap = await dbMod.get(dbMod.ref(rtdb, chunkPath));
-      } catch (_) {
-        throw new Error(
-          "This build used an older locked vault path. Studio Owner: re-upload the .ZIP in your console once + publish updated Firebase Rules!"
-        );
-      }
+      const snap = await dbMod.get(dbMod.ref(rtdb, chunkPath));
       if (!snap.exists()) throw new Error("Archive chunks not found.");
       const rawChunks = snap.val();
       const parts = (Array.isArray(rawChunks) ? rawChunks : Object.values(rawChunks)).map((b) =>
@@ -806,7 +1048,6 @@
       triggerExternalDirectUrl(rawRef);
     }
 
-    // Mark latest version as downloaded in player's cloud purchase record!
     if (currentVerifiedPlayer && currentPlayerPurchases[gameId] && isRealtimeDbConfigured()) {
       try {
         const { auth } = await getFirebasePublicServices();
@@ -867,67 +1108,24 @@
         .then(({ rtdb, dbMod }) => {
           unsubGames = dbMod.onValue(dbMod.ref(rtdb, "games"), (snap) => {
             const val = snap.val() || {};
-            const items = Object.keys(val)
-              .map((k) => ({ id: k, ...val[k] }))
-              .filter((g) => g && g.published !== false);
-            items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-            latestGames = items;
+            latestGames = Object.keys(val)
+              .map((id) => ({
+                id,
+                ...val[id],
+                coverImageUrl: normalizePublicCoverUrl(val[id].coverImageUrl)
+              }))
+              .filter((g) => g.published !== false)
+              .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
             emit();
           });
-
           unsubSettings = dbMod.onValue(dbMod.ref(rtdb, "settings/public_store"), (snap) => {
-            if (snap.exists()) {
-              latestSettings = { showDefaultComingSoon: true, ...snap.val() };
-            }
+            if (snap.exists()) latestSettings = snap.val();
             emit();
           });
         })
-        .catch((err) => console.error("Realtime Database connection error:", err));
-
-      return () => {
-        if (unsubGames) unsubGames();
-        if (unsubSettings) unsubSettings();
-      };
-    }
-
-    if (isFirebaseConfigured()) {
-      let unsubGames = null;
-      let unsubSettings = null;
-      let latestGames = [];
-      let latestSettings = { showDefaultComingSoon: true };
-
-      const emit = () => {
-        latestPublicGamesCache = latestGames;
-        onChange({
-          mode: "firebase",
-          settings: latestSettings,
-          games: latestGames
+        .catch(() => {
+          onChange({ mode: "offline", settings: { showDefaultComingSoon: true }, games: [] });
         });
-      };
-
-      getPublicFirestore()
-        .then(({ db, fsMod }) => {
-          const gamesRef = fsMod.collection(db, "games");
-          unsubGames = fsMod.onSnapshot(gamesRef, (snap) => {
-            const items = [];
-            snap.forEach((d) => {
-              const data = d.data();
-              if (data.published !== false) items.push({ id: d.id, ...data });
-            });
-            items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-            latestGames = items;
-            emit();
-          });
-
-          const settingsRef = fsMod.doc(db, "settings", "public_store");
-          unsubSettings = fsMod.onSnapshot(settingsRef, (snap) => {
-            if (snap.exists()) {
-              latestSettings = { showDefaultComingSoon: true, ...snap.data() };
-            }
-            emit();
-          });
-        })
-        .catch((err) => console.error("Firestore connection error:", err));
 
       return () => {
         if (unsubGames) unsubGames();
@@ -936,11 +1134,7 @@
     }
 
     if (isStaticGithubHostWithoutBackend()) {
-      onChange({
-        mode: "unconfigured_static",
-        settings: { showDefaultComingSoon: true },
-        games: []
-      });
+      onChange({ mode: "unconfigured", settings: { showDefaultComingSoon: true }, games: [] });
       return () => {};
     }
 
@@ -949,7 +1143,7 @@
 
     async function fetchInitial() {
       try {
-        const res = await fetch(`${API_BASE}/api/public/state`);
+        const res = await fetch(`${API_BASE}/api/public/state`, { cache: "no-store" });
         if (!res.ok) return;
         const state = await res.json();
         if (active) {
@@ -1067,9 +1261,9 @@
           : backendVer.downloadUrl;
       const receipt = {
         gameId: payload.gameId,
-        method: "razorpay",
-        paymentId: payload.razorpay_payment_id,
-        orderId: payload.razorpay_order_id,
+        gameTitle: payload.gameTitle || "Game",
+        method: payload.mode === "sandbox_preview" ? "razorpay_sandbox" : "razorpay_live",
+        paymentId: backendVer.paymentId,
         rawDownloadRef: downloadUrl,
         expiresInMinutes: backendVer.expiresInMinutes || 60
       };
@@ -1079,56 +1273,52 @@
       return receipt;
     }
 
-    if (!payload.razorpay_payment_id) {
-      throw new Error("Payment ID missing — download remains locked.");
-    }
-    if (!isRealtimeDbConfigured()) {
-      throw new Error("Configure FIREBASE_CONFIG.databaseURL in js/store-config.js.");
+    const pid = String(payload.razorpay_payment_id || "").trim();
+    if (!pid || !pid.startsWith("pay_")) {
+      throw new Error("Invalid Razorpay Payment ID.");
     }
 
-    const { rtdb, dbMod } = await getPublicRealtimeDb();
-    const gateHash = await sha256Hex(`drevalith-buyer-gate-v4:${payload.gameId}`);
-    const gateSnap = await dbMod.get(dbMod.ref(rtdb, `buyer_gate/${gateHash}`));
-    if (!gateSnap.exists()) {
-      throw new Error("Download archive not configured for this game yet.");
+    let decryptedTarget = "";
+    if (isRealtimeDbConfigured()) {
+      const { rtdb, dbMod } = await getPublicRealtimeDb();
+      const gateHash = await sha256Hex(`drevalith-buyer-gate-v4:${payload.gameId}`);
+      const gateSnap = await dbMod.get(dbMod.ref(rtdb, `buyer_gate/${gateHash}`));
+      if (!gateSnap.exists()) {
+        throw new Error("Download archive not configured yet by Studio Owner.");
+      }
+      const gateVal = gateSnap.val();
+      decryptedTarget = await decryptAesGcmEnvelope(
+        `drevalith-paid-unlock-v4:${payload.gameId}:${gateVal.nonce}`,
+        gateVal.saltB64,
+        gateVal.ivB64,
+        gateVal.cipherB64
+      );
+
+      const buyerEmail =
+        (currentVerifiedPlayer && currentVerifiedPlayer.email) || String(payload.buyerEmail || "");
+      await dbMod
+        .set(dbMod.ref(rtdb, `transactions/txn_${pid.replace(/[^a-zA-Z0-9_]/g, "")}`), {
+          id: `txn_${Date.now()}`,
+          type: "razorpay",
+          mode: payload.mode || "live_razorpay",
+          gameId: payload.gameId,
+          gameTitle: payload.gameTitle || "Game",
+          amount: Number(payload.amount || 0),
+          currency: payload.currency || "USD",
+          paymentId: pid,
+          buyerUid: currentVerifiedPlayer ? currentVerifiedPlayer.uid : "",
+          buyerEmail,
+          createdAt: Date.now()
+        })
+        .catch(() => {});
     }
-    const gateVal = gateSnap.val();
-    const rawRef = await decryptAesGcmEnvelope(
-      `drevalith-paid-unlock-v4:${payload.gameId}:${gateVal.nonce || ""}`,
-      gateVal.saltB64,
-      gateVal.ivB64,
-      gateVal.cipherB64
-    );
-
-    const safePid = String(payload.razorpay_payment_id).replace(/[^a-zA-Z0-9_-]/g, "_");
-    const gameObj = latestPublicGamesCache.find((g) => g.id === payload.gameId) || {};
-    const buyerEmail =
-      (currentVerifiedPlayer && currentVerifiedPlayer.email) ||
-      String(payload.buyerEmail || "").toLowerCase();
-
-    await dbMod
-      .set(dbMod.ref(rtdb, `transactions/txn_${safePid}`), {
-        id: `txn_${safePid}`,
-        type: "razorpay_payment",
-        mode: payload.sandboxSimulated ? "sandbox_preview" : "live_razorpay",
-        gameId: payload.gameId,
-        gameTitle: gameObj.title || "Game",
-        gameVersion: gameObj.version || "v1.0.0",
-        amount: Number(gameObj.price || 0),
-        currency: gameObj.currency || "USD",
-        paymentId: payload.razorpay_payment_id,
-        buyerUid: currentVerifiedPlayer ? currentVerifiedPlayer.uid : "",
-        buyerEmail,
-        createdAt: Date.now()
-      })
-      .catch(() => {});
 
     const receipt = {
       gameId: payload.gameId,
-      gameTitle: gameObj.title || "Game",
-      method: "razorpay",
-      paymentId: payload.razorpay_payment_id,
-      rawDownloadRef: rawRef,
+      gameTitle: payload.gameTitle || "Game",
+      method: payload.mode === "sandbox_preview" ? "razorpay_sandbox" : "razorpay_live",
+      paymentId: pid,
+      rawDownloadRef: decryptedTarget,
       expiresInMinutes: 10080
     };
     saveUnlockReceipt(payload.gameId, receipt);
@@ -1137,8 +1327,8 @@
   }
 
   async function redeemPrivateKey({ gameId, gameTitle, privateKey, redeemerLabel }) {
-    const clean = normalizePrivateKey(privateKey);
-    if (!clean || clean.length < 6) {
+    const clean = normalizePrivateKeyClean(privateKey);
+    if (!clean || clean.length < 8) {
       throw new Error("Please enter a valid Studio Private Key (e.g. DREV-XXXX-XXXX-XXXX).");
     }
 
@@ -1193,7 +1383,7 @@
     const txRes = await dbMod.runTransaction(envRef, (curr) => {
       if (!curr) return curr;
       if (!curr.active) return;
-      if (Number(curr.maxUses) > 0 && Number(curr.usedCount || 0) >= Number(env.maxUses)) return;
+      if (Number(curr.maxUses) > 0 && Number(curr.usedCount || 0) >= Number(curr.maxUses)) return;
       curr.usedCount = Number(curr.usedCount || 0) + 1;
       curr.lastRedeemedAt = Date.now();
       return curr;
@@ -1244,64 +1434,75 @@
 
   async function restorePurchase({ gameId, paymentId, buyerEmail }) {
     const pid = String(paymentId || "").trim();
-    if (!pid) throw new Error("Please enter your Razorpay Payment ID (starts with pay_).");
+    if (!pid) throw new Error("Please enter your Razorpay Payment ID (startsWith pay_).");
 
     const backendRes = await tryBackendJson("/api/purchases/restore", { gameId, paymentId: pid, buyerEmail });
     if (backendRes && backendRes.verified) {
       const downloadUrl =
-        backendRes.downloadUrl && backendVerDownloadUrl(backendRes.downloadUrl);
+        backendRes.downloadUrl && String(backendRes.downloadUrl).startsWith("/")
+          ? `${API_BASE}${backendRes.downloadUrl}`
+          : backendRes.downloadUrl;
       const receipt = {
         gameId,
         method: "razorpay_restored",
         paymentId: pid,
         rawDownloadRef: downloadUrl,
-        expiresInMinutes: 60
+        expiresInMinutes: backendRes.expiresInMinutes || 60
       };
       saveUnlockReceipt(gameId, receipt);
       await savePurchaseToVerifiedAccount(gameId, receipt).catch(() => {});
       return receipt;
     }
 
-    throw new Error(
-      "Sign in to your Drevalith Account ('My Purchases' in top menu) to access all your purchased games & updates!"
-    );
-  }
-
-  function backendVerDownloadUrl(u) {
-    return u && String(u).startsWith("/") ? `${API_BASE}${u}` : u;
-  }
-
-  function getFreeGameDownloadUrl(game) {
-    if (!game || !game.isFree) return "";
-    if (game.freeDirectUrl) return game.freeDirectUrl;
-    return `${API_BASE}/api/download/${encodeURIComponent(game.id)}`;
+    if (isRealtimeDbConfigured()) {
+      const { rtdb, dbMod } = await getPublicRealtimeDb();
+      const gateHash = await sha256Hex(`drevalith-buyer-gate-v4:${gameId}`);
+      const gateSnap = await dbMod.get(dbMod.ref(rtdb, `buyer_gate/${gateHash}`));
+      if (gateSnap.exists() && pid.startsWith("pay_") && pid.length >= 12) {
+        const g = gateSnap.val();
+        const dec = await decryptAesGcmEnvelope(
+          `drevalith-paid-unlock-v4:${gameId}:${g.nonce}`,
+          g.saltB64,
+          g.ivB64,
+          g.cipherB64
+        );
+        const receipt = {
+          gameId,
+          method: "razorpay_restored",
+          paymentId: pid,
+          rawDownloadRef: dec,
+          expiresInMinutes: 10080
+        };
+        saveUnlockReceipt(gameId, receipt);
+        await savePurchaseToVerifiedAccount(gameId, receipt).catch(() => {});
+        return receipt;
+      }
+    }
+    throw new Error("Could not find a verified purchase with that Payment ID.");
   }
 
   window.DrevalithStore = {
     isFirebaseConfigured,
     isRealtimeDbConfigured,
     isRazorpayLiveKeyConfigured,
+    formatPrice,
     formatPrivateKeyInput,
-    formatBytes,
-    formatCurrency,
     getUnlockForGame,
-    getFreeGameDownloadUrl,
+    hasGameUpdateAvailable,
     subscribePublicStore,
     subscribePlayerAuth,
-    getCurrentPlayer,
-    getPlayerPurchases,
-    hasGameUpdateAvailable,
+    fetchPlayerProfileFromDb,
     registerPlayerAccount,
-    resendPlayerVerificationLink,
-    checkAndCompletePlayerVerification,
     loginPlayerAccount,
+    resendPlayerVerificationLink,
+    updatePlayerProfileName,
     sendPlayerPasswordReset,
     logoutPlayerAccount,
-    triggerVerifiedDownload,
     loadRazorpayCheckoutScript,
     createPaymentOrder,
     verifyRazorpayPayment,
     redeemPrivateKey,
-    restorePurchase
+    restorePurchase,
+    triggerVerifiedDownload
   };
 })();

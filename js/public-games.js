@@ -22,13 +22,17 @@
 
   let playerAuthState = {
     user: null,
+    dbProfile: null,
     pendingVerificationEmail: "",
+    cooldownSec: 0,
     purchases: {}
   };
 
   let activeAuthTab = "login"; // "login" | "signup" | "verify"
   let pendingCheckoutGameId = "";
-  let verificationPollInterval = null;
+  let wasWaitingForEmailVerify = false;
+  let editingProfileNameInline = false;
+  let verifyCooldownTicker = null;
 
   function esc(str) {
     return String(str ?? "")
@@ -480,6 +484,9 @@
           });
           window.scrollTo({ top: 0, behavior: "smooth" });
           if (pushHash) history.replaceState(null, "", "#account");
+          if (playerAuthState.user && typeof Store.fetchPlayerProfileFromDb === "function") {
+            Store.fetchPlayerProfileFromDb().catch(() => {});
+          }
           renderAccountAndPurchasesPage();
           return;
         }
@@ -506,38 +513,16 @@
     const btn = document.getElementById("drev-nav-account-btn");
     if (!btn) return;
     if (playerAuthState.user) {
-      const totalOwned = Object.keys(playerAuthState.purchases || {}).length;
+      const profName =
+        (playerAuthState.dbProfile && playerAuthState.dbProfile.name) ||
+        playerAuthState.user.displayName ||
+        "Profile";
       const updatesCount = countAvailableUpdates();
       btn.innerHTML =
-        `My Purchases (${totalOwned})` +
+        `👤 ${esc(profName)}` +
         (updatesCount > 0 ? `<span class="nav-update-dot">${updatesCount} Update</span>` : "");
     } else {
       btn.textContent = "Sign In / Purchases";
-    }
-  }
-
-  function startAutoVerificationPolling() {
-    stopAutoVerificationPolling();
-    verificationPollInterval = setInterval(async () => {
-      if (activeAuthTab !== "verify" || playerAuthState.user) {
-        stopAutoVerificationPolling();
-        return;
-      }
-      try {
-        const res = await Store.checkAndCompletePlayerVerification();
-        if (res && res.verified) {
-          stopAutoVerificationPolling();
-          showToast("✅ Email verified! Your Drevalith Account is now active.");
-          handlePostLoginContinuation();
-        }
-      } catch (_) {}
-    }, 4000);
-  }
-
-  function stopAutoVerificationPolling() {
-    if (verificationPollInterval) {
-      clearInterval(verificationPollInterval);
-      verificationPollInterval = null;
     }
   }
 
@@ -557,10 +542,16 @@
     if (!mount) return;
     updateNavbarAccountLabel();
 
-    // STATE A: SIGNED IN TO VERIFIED PLAYER ACCOUNT -> SHOW MY PURCHASES & UPDATES!
+    // STATE A: SIGNED IN TO VERIFIED PLAYER ACCOUNT -> SHOW DB PROFILE + PURCHASES & UPDATES!
     if (playerAuthState.user) {
-      stopAutoVerificationPolling();
       const u = playerAuthState.user;
+      const dbProf = playerAuthState.dbProfile || {};
+      const profileName = dbProf.name || dbProf.displayName || u.displayName || "Player";
+      const profileEmail = dbProf.email || u.email || "";
+      const joinedDate = dbProf.createdAt
+        ? new Date(dbProf.createdAt).toLocaleDateString()
+        : "Verified Member";
+
       const purchasesMap = playerAuthState.purchases || {};
       const purchaseIds = Object.keys(purchasesMap).sort(
         (a, b) => (purchasesMap[b].purchasedAt || 0) - (purchasesMap[a].purchasedAt || 0)
@@ -610,7 +601,7 @@
                         ✔ Purchased &amp; Owned
                       </span>
                       <span style="font-size:0.78rem;color:var(--text-muted);">
-                        Current Build: <strong style="color:#fff;">${esc(liveVersion)}</strong>
+                        Latest Build: <strong style="color:#fff;">${esc(liveVersion)}</strong>
                       </span>
                       ${
                         hasUpdate
@@ -656,22 +647,72 @@
             })
             .join("");
 
+      if (verifyCooldownTicker) {
+        clearInterval(verifyCooldownTicker);
+        verifyCooldownTicker = null;
+      }
+
       mount.innerHTML = `
-        <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:1.8rem;padding-bottom:1.25rem;border-bottom:1px solid var(--border);">
-          <div>
-            <span class="section-tag">Verified Player Library // Cloud Synced</span>
-            <h2 style="font-size:2rem;font-weight:900;text-transform:uppercase;margin-top:0.2rem;">My Purchased Games &amp; Updates</h2>
-            <p style="color:var(--text-muted);font-size:0.88rem;margin-top:0.25rem;">
-              Signed in as <strong style="color:#fff;">${esc(u.email)}</strong>
-              <span style="color:#4ade80;font-weight:800;margin-left:0.4rem;">✔ Email Verified</span>
-            </p>
+        ${
+          dbProf.dbRulesWarning
+            ? `<div class="drev-alert error" style="display:block;margin-bottom:1.1rem;">
+                 ⚠️ <strong>Firebase /users Rules Need 1-Click Publish:</strong> Open your Owner Console → click <strong>"📋 Copy Firebase Rules For My Gmail"</strong> → paste in Firebase Console → Realtime Database → Rules → click <strong>Publish</strong> so player profiles &amp; purchases sync to <code>/users</code>!
+               </div>`
+            : ""
+        }
+        <!-- PLAYER PROFILE CARD (FETCHED DIRECTLY FROM FIREBASE /users/{uid}/profile) -->
+        <div style="padding:1.75rem 1.95rem;border-radius:16px;background:linear-gradient(145deg,rgba(18,24,39,0.96),rgba(9,12,20,0.98));border:1px solid rgba(242,53,25,0.45);margin-bottom:2.1rem;box-shadow:0 18px 50px rgba(0,0,0,0.62);">
+          <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:1.25rem;">
+            <div style="flex:1;min-width:260px;">
+              <span class="section-tag" style="margin-bottom:0.25rem;">Player Profile // Fetched Directly From Firebase Database</span>
+              <h2 style="font-size:1.8rem;font-weight:900;text-transform:uppercase;margin:0.15rem 0 1rem 0;">
+                👤 ${esc(profileName)}
+              </h2>
+
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1rem 2rem;padding:1.1rem 1.25rem;border-radius:12px;background:rgba(255,255,255,0.03);border:1px solid var(--border);">
+                <div>
+                  <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Full Name (From Database)</span>
+                  ${
+                    editingProfileNameInline
+                      ? `<form onsubmit="window.DrevalithPublicUI.saveProfileNameInline(event)" style="display:flex;gap:0.45rem;align-items:center;margin-top:0.2rem;">
+                           <input type="text" id="drev-inline-name-input" class="drev-input" style="padding:0.42rem 0.65rem;font-size:0.88rem;" value="${esc(profileName)}" required />
+                           <button type="submit" class="btn-primary" style="padding:0.42rem 0.85rem;font-size:0.78rem;border:none;cursor:pointer;">Save</button>
+                           <button type="button" class="link-subtle-btn" style="font-size:0.76rem;" onclick="window.DrevalithPublicUI.toggleEditName(false)">Cancel</button>
+                         </form>`
+                      : `<div style="display:flex;align-items:center;gap:0.6rem;">
+                           <strong style="color:#fff;font-size:1.05rem;">${esc(profileName)}</strong>
+                           <button type="button" class="link-subtle-btn" style="font-size:0.76rem;" onclick="window.DrevalithPublicUI.toggleEditName(true)">✏️ Edit</button>
+                         </div>`
+                  }
+                </div>
+
+                <div>
+                  <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Email Address (From Database)</span>
+                  <strong style="color:#fff;font-size:1.05rem;word-break:break-all;">${esc(profileEmail)}</strong>
+                </div>
+
+                <div>
+                  <span style="display:block;font-size:0.72rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:0.25rem;">Account &amp; Database Status</span>
+                  <span style="color:#4ade80;font-weight:800;">✔ Verified</span>
+                  <span style="color:var(--text-muted);font-size:0.82rem;"> • ${
+                    dbProf.fetchedFromDatabase !== false ? "Synced Live (/users)" : "Local Preview"
+                  } • ${esc(joinedDate)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex;gap:0.7rem;align-items:center;flex-wrap:wrap;">
+              <button type="button" class="btn-secondary" onclick="window.switchPage('games')">Browse Store</button>
+              <button type="button" class="btn-secondary" style="border-color:rgba(239,68,68,0.45);color:#fca5a5;" onclick="window.DrevalithPublicUI.logoutPlayer()">
+                Sign Out
+              </button>
+            </div>
           </div>
-          <div style="display:flex;gap:0.7rem;align-items:center;">
-            <button type="button" class="btn-secondary" onclick="window.switchPage('games')">Browse Store</button>
-            <button type="button" class="btn-secondary" style="border-color:rgba(239,68,68,0.45);color:#fca5a5;" onclick="window.DrevalithPublicUI.logoutPlayer()">
-              Sign Out
-            </button>
-          </div>
+        </div>
+
+        <div style="margin-bottom:1.15rem;">
+          <span class="section-tag">Cloud Purchase Library</span>
+          <h3 style="font-size:1.5rem;font-weight:900;text-transform:uppercase;margin-top:0.15rem;">My Purchased Games &amp; Updates (${purchaseIds.length})</h3>
         </div>
 
         ${
@@ -687,56 +728,86 @@
       return;
     }
 
-    // STATE B: WAITING FOR EMAIL LINK VERIFICATION
+    // STATE B: LIVE AUTO-VERIFICATION WATCHER (NO "I CLICKED LINK" BUTTON — REDIRECTS AUTOMATICALLY!)
     if (activeAuthTab === "verify" || playerAuthState.pendingVerificationEmail) {
       activeAuthTab = "verify";
-      startAutoVerificationPolling();
+      wasWaitingForEmailVerify = true;
       const targetEmail = playerAuthState.pendingVerificationEmail || "your email";
+      const initWaitSec = Number(playerAuthState.cooldownSec || 0);
+
       mount.innerHTML = `
-        <div class="drev-auth-card">
-          <span class="section-tag">Email Verification Required</span>
-          <h2 style="font-size:1.55rem;font-weight:900;text-transform:uppercase;margin:0.3rem 0 0.6rem 0;">
-            Verify Your Email Link
+        <div class="drev-auth-card" style="text-align:center;">
+          <span class="section-tag">Check Your Email Inbox</span>
+          <h2 style="font-size:1.55rem;font-weight:900;text-transform:uppercase;margin:0.35rem 0 0.65rem 0;">
+            📧 Verify Your Email Link
           </h2>
-          <p style="color:var(--text-muted);font-size:0.9rem;line-height:1.55;margin-bottom:1.1rem;">
-            We sent a verification link directly to <strong style="color:#fff;">${esc(targetEmail)}</strong>.<br/>
-            <span style="font-size:0.82rem;">(Check your <strong>Inbox</strong> and <strong>Spam / Promotions</strong> folder.)</span>
+          <p style="color:var(--text-muted);font-size:0.91rem;line-height:1.55;margin-bottom:1.15rem;">
+            We sent a verification link to <strong style="color:#fff;">${esc(targetEmail)}</strong>.<br/>
+            <span style="font-size:0.82rem;">(Check your <strong>Inbox</strong> AND your <strong>Spam / Promotions</strong> folder for an email from Firebase.)</span>
           </p>
 
-          <div id="drev-auth-alert" class="drev-alert info" style="display:block;">
-            ⏳ Waiting for you to click the verification link in your email... Your account in Firebase is only created <strong>after</strong> your email is verified!
+          <div id="drev-auth-alert" class="drev-alert info" style="display:block;text-align:left;">
+            📡 <strong>Auto-Detecting Verification Live...</strong><br/>
+            Open the email and click the verification link inside — the instant your email is verified, this page will <strong>automatically log you into your Account &amp; Profile</strong>!
           </div>
 
-          <div style="display:grid;gap:0.7rem;margin-top:1.15rem;">
-            <button type="button" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;" onclick="window.DrevalithPublicUI.completeEmailVerify(this)">
-              ✅ I Clicked the Verification Link — Complete Sign Up
+          <div style="display:flex;justify-content:center;gap:1.25rem;flex-wrap:wrap;margin-top:1.25rem;">
+            <button type="button" id="drev-resend-verify-btn" class="link-subtle-btn" ${
+              initWaitSec > 0 ? "disabled style='opacity:0.55;cursor:not-allowed;'" : ""
+            } onclick="window.DrevalithPublicUI.resendVerify(this)">
+              ${initWaitSec > 0 ? `🔁 Resend Available in ${initWaitSec}s` : "🔁 Resend Verification Email"}
             </button>
-            <button type="button" class="btn-secondary" style="width:100%;text-align:center;" onclick="window.DrevalithPublicUI.resendVerify(this)">
-              🔁 Resend Verification Email
-            </button>
-            <button type="button" class="link-subtle-btn" style="margin-top:0.35rem;text-align:center;" onclick="window.DrevalithPublicUI.switchAuthTab('login')">
-              ← Use a Different Email / Back to Sign In
+            <button type="button" class="link-subtle-btn" style="color:var(--text-muted);" onclick="window.DrevalithPublicUI.switchAuthTab('login')">
+              ← Use Another Email / Sign In
             </button>
           </div>
         </div>
       `;
+
+      if (verifyCooldownTicker) clearInterval(verifyCooldownTicker);
+      if (initWaitSec > 0) {
+        let rem = initWaitSec;
+        verifyCooldownTicker = setInterval(() => {
+          rem -= 1;
+          const b = document.getElementById("drev-resend-verify-btn");
+          if (!b) {
+            clearInterval(verifyCooldownTicker);
+            verifyCooldownTicker = null;
+            return;
+          }
+          if (rem <= 0) {
+            clearInterval(verifyCooldownTicker);
+            verifyCooldownTicker = null;
+            b.disabled = false;
+            b.style.opacity = "1";
+            b.style.cursor = "pointer";
+            b.textContent = "🔁 Resend Verification Email";
+          } else {
+            b.textContent = `🔁 Resend Available in ${rem}s`;
+          }
+        }, 1000);
+      }
       return;
     }
 
+    if (verifyCooldownTicker) {
+      clearInterval(verifyCooldownTicker);
+      verifyCooldownTicker = null;
+    }
+
     // STATE C: LOGGED OUT -> SIGN IN OR SIGN UP FORM
-    stopAutoVerificationPolling();
     const isSignup = activeAuthTab === "signup";
     mount.innerHTML = `
       <div class="drev-auth-card">
         <span class="section-tag">Drevalith Player Account // Cloud Library</span>
         <h2 style="font-size:1.6rem;font-weight:900;text-transform:uppercase;margin:0.25rem 0 0.45rem 0;">
-          ${isSignup ? "Create Verified Account" : "Player Sign In"}
+          ${isSignup ? "Create Player Account" : "Player Sign In"}
         </h2>
         <p style="color:var(--text-muted);font-size:0.87rem;margin-bottom:1.2rem;">
           ${
             pendingCheckoutGameId
               ? "Sign in or create your verified account first so your purchase &amp; all future game updates are permanently saved to <strong>My Purchases</strong>!"
-              : "Access your purchased games anytime and download new game updates for free."
+              : "Access your profile, purchased games, and free game updates anytime."
           }
         </p>
 
@@ -745,7 +816,7 @@
             🔐 Sign In
           </button>
           <button type="button" class="drev-auth-tab ${isSignup ? "active" : ""}" onclick="window.DrevalithPublicUI.switchAuthTab('signup')">
-            ✉️ Sign Up (Verify Email)
+            ✉️ Sign Up
           </button>
         </div>
 
@@ -756,8 +827,8 @@
             ? `
           <form onsubmit="window.DrevalithPublicUI.submitSignup(event)">
             <div class="drev-field">
-              <label for="drev-signup-name">Player Name (Optional)</label>
-              <input type="text" id="drev-signup-name" class="drev-input" placeholder="Your gamer tag or name" autocomplete="name" />
+              <label for="drev-signup-name">Your Name *</label>
+              <input type="text" id="drev-signup-name" class="drev-input" placeholder="Enter your full name or gamer tag" autocomplete="name" required />
             </div>
             <div class="drev-field">
               <label for="drev-signup-email">Email Address *</label>
@@ -772,7 +843,7 @@
               <input type="password" id="drev-signup-pass2" class="drev-input" placeholder="••••••••" minlength="6" autocomplete="new-password" required />
             </div>
             <button type="submit" id="drev-signup-btn" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
-              📧 Send Verification Link to Email
+              📧 Sign Up &amp; Send Verification Email
             </button>
           </form>
         `
@@ -787,7 +858,7 @@
               <input type="password" id="drev-login-pass" class="drev-input" placeholder="••••••••" autocomplete="current-password" required />
             </div>
             <button type="submit" id="drev-login-btn" class="btn-primary" style="width:100%;justify-content:center;display:flex;border:none;cursor:pointer;">
-              🔐 Sign In to My Purchases
+              🔐 Sign In to Account
             </button>
             <div style="text-align:right;margin-top:0.75rem;">
               <button type="button" class="link-subtle-btn" onclick="window.DrevalithPublicUI.forgotPassword()">
@@ -1458,7 +1529,7 @@
       activeAuthTab = tab;
       if (tab !== "verify") {
         playerAuthState.pendingVerificationEmail = "";
-        stopAutoVerificationPolling();
+        wasWaitingForEmailVerify = false;
       }
       renderAccountAndPurchasesPage();
     },
@@ -1471,6 +1542,11 @@
       const alertEl = document.getElementById("drev-auth-alert");
       const btn = document.getElementById("drev-signup-btn");
 
+      if (!displayName) {
+        alertEl.className = "drev-alert error";
+        alertEl.textContent = "Please enter your Name.";
+        return;
+      }
       if (password !== password2) {
         alertEl.className = "drev-alert error";
         alertEl.textContent = "Passwords do not match. Please re-enter.";
@@ -1483,60 +1559,76 @@
 
       try {
         const res = await Store.registerPlayerAccount({ displayName, email, password });
+        if (res.alreadyVerified) {
+          showToast("✅ Account ready! Opening your Profile...");
+          handlePostLoginContinuation();
+          return;
+        }
         playerAuthState.pendingVerificationEmail = res.email;
+        wasWaitingForEmailVerify = true;
         activeAuthTab = "verify";
         renderAccountAndPurchasesPage();
-        showToast(`📧 Verification link sent to ${res.email}!`);
+        showToast(
+          res.sent
+            ? `📧 Verification link sent to ${res.email}!`
+            : `📩 Check your inbox (${res.email}) and click the verification link!`
+        );
       } catch (err) {
         alertEl.className = "drev-alert error";
         alertEl.textContent = err.message || "Could not create account.";
         btn.disabled = false;
-        btn.textContent = "📧 Send Verification Link to Email";
-      }
-    },
-    async completeEmailVerify(btn) {
-      const alertEl = document.getElementById("drev-auth-alert");
-      if (btn) {
-        btn.disabled = true;
-        btn.textContent = "Checking Email Verification Status...";
-      }
-      try {
-        const res = await Store.checkAndCompletePlayerVerification();
-        if (res && res.verified) {
-          showToast("✅ Email verified! Welcome to Drevalith Games™.");
-          handlePostLoginContinuation();
-        } else if (alertEl) {
-          alertEl.className = "drev-alert error";
-          alertEl.textContent =
-            "Not verified yet! Open the email we sent you (check Spam too), click the verification link inside, then click this button again.";
-        }
-      } catch (err) {
-        if (alertEl) {
-          alertEl.className = "drev-alert error";
-          alertEl.textContent = err.message || "Verification check failed.";
-        }
-      } finally {
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = "✅ I Clicked the Verification Link — Complete Sign Up";
-        }
+        btn.textContent = "📧 Sign Up & Send Verification Email";
       }
     },
     async resendVerify(btn) {
+      const alertEl = document.getElementById("drev-auth-alert");
       if (btn) btn.disabled = true;
       try {
         const r = await Store.resendPlayerVerificationLink();
         if (r && r.verified) {
+          wasWaitingForEmailVerify = false;
           handlePostLoginContinuation();
           return;
         }
-        showToast(`📧 Sent a fresh verification link to ${r.email || "your email"}!`);
+        if (alertEl) {
+          alertEl.className = "drev-alert success";
+          alertEl.textContent = `📧 Fresh verification email sent to ${r.email || "your inbox"}! Click the link inside — your account will open automatically.`;
+        }
+        showToast(`📧 Sent verification link to ${r.email || "your email"}!`);
       } catch (err) {
-        showToast(`❌ ${err.message}`);
+        if (alertEl) {
+          alertEl.className = "drev-alert error";
+          alertEl.textContent = err.message || "Please wait 60 seconds before requesting another email.";
+        }
+        showToast(`⏳ ${err.message}`);
       } finally {
         setTimeout(() => {
           if (btn) btn.disabled = false;
         }, 15000);
+      }
+    },
+    toggleEditName(openState) {
+      editingProfileNameInline = Boolean(openState);
+      renderAccountAndPurchasesPage();
+      if (editingProfileNameInline) {
+        setTimeout(() => {
+          const inp = document.getElementById("drev-inline-name-input");
+          if (inp && typeof inp.focus === "function") inp.focus();
+        }, 40);
+      }
+    },
+    async saveProfileNameInline(e) {
+      e.preventDefault();
+      const inp = document.getElementById("drev-inline-name-input");
+      const nextName = inp ? inp.value.trim() : "";
+      if (!nextName) return;
+      try {
+        await Store.updatePlayerProfileName(nextName);
+        editingProfileNameInline = false;
+        renderAccountAndPurchasesPage();
+        showToast("✅ Name saved & fetched directly from Firebase Database!");
+      } catch (err) {
+        showToast(`❌ ${err.message || "Could not update profile name."}`);
       }
     },
     async submitLogin(e) {
@@ -1554,18 +1646,20 @@
         const res = await Store.loginPlayerAccount({ email, password });
         if (!res.verified) {
           playerAuthState.pendingVerificationEmail = res.email;
+          wasWaitingForEmailVerify = true;
           activeAuthTab = "verify";
           renderAccountAndPurchasesPage();
-          showToast("📩 Please click the verification link sent to your email first!");
+          showToast("📩 Click the verification link in your email — your account will open automatically!");
           return;
         }
-        showToast(`✅ Signed in as ${res.user.email}`);
+        wasWaitingForEmailVerify = false;
+        showToast(`✅ Signed in as ${(res.dbProfile && res.dbProfile.name) || res.user.email}`);
         handlePostLoginContinuation();
       } catch (err) {
         alertEl.className = "drev-alert error";
         alertEl.textContent = err.message || "Invalid email or password.";
         btn.disabled = false;
-        btn.textContent = "🔐 Sign In to My Purchases";
+        btn.textContent = "🔐 Sign In to Account";
       }
     },
     async forgotPassword() {
@@ -1594,6 +1688,7 @@
     },
     async logoutPlayer() {
       await Store.logoutPlayerAccount();
+      wasWaitingForEmailVerify = false;
       activeAuthTab = "login";
       renderAccountAndPurchasesPage();
       renderPublishedGames();
@@ -1614,7 +1709,19 @@
     }
 
     Store.subscribePlayerAuth((nextAuth) => {
+      const justVerified = Boolean(
+        (wasWaitingForEmailVerify || activeAuthTab === "verify") && nextAuth && nextAuth.user
+      );
       playerAuthState = nextAuth;
+      if (justVerified) {
+        wasWaitingForEmailVerify = false;
+        activeAuthTab = "login";
+        const welcomeName =
+          (nextAuth.dbProfile && nextAuth.dbProfile.name) || nextAuth.user.displayName || nextAuth.user.email;
+        showToast(`✅ Email verified! Welcome to Drevalith Games™, ${welcomeName}!`);
+        handlePostLoginContinuation();
+        return;
+      }
       renderPublishedGames();
       renderAccountAndPurchasesPage();
     });
