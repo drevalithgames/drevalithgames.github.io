@@ -148,6 +148,33 @@
     return new Promise((r) => setTimeout(r, ms));
   }
 
+  function getRtdbRestBaseUrl() {
+    const fc = CFG.FIREBASE_CONFIG || {};
+    return String(fc.databaseURL || "").trim().replace(/\/+$/, "");
+  }
+
+  async function rtdbRestJson(method, path, bodyObj, idToken) {
+    const base = getRtdbRestBaseUrl();
+    if (!base) throw new Error("Firebase databaseURL is missing in js/store-config.js.");
+    const cleanPath = String(path || "").replace(/^\/+|\/+$/g, "");
+    const authQ = idToken ? `?auth=${encodeURIComponent(idToken)}` : "";
+    const url = `${base}/${cleanPath}.json${authQ}`;
+    const opts = {
+      method,
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store"
+    };
+    if (bodyObj !== undefined && method !== "GET" && method !== "DELETE") {
+      opts.body = JSON.stringify(bodyObj);
+    }
+    const res = await fetch(url, opts);
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`Firebase HTTP ${res.status}: ${txt.slice(0, 120) || res.statusText}`);
+    }
+    return res.json();
+  }
+
   // --------------------------------------------------------------------------
   // Local Device Receipt Cache
   // --------------------------------------------------------------------------
@@ -398,25 +425,18 @@
     }
   }
 
-  // Explicitly fetches the player's Profile (Name & Email) directly from Firebase Realtime Database!
+  // Explicitly fetches the player's Profile (Name & Email) directly from Firebase Realtime Database via HTTPS REST!
   async function fetchPlayerProfileFromDb() {
     if (!isRealtimeDbConfigured()) return currentDbProfile;
     const svc = await getFirebasePublicServices();
     if (!svc || !svc.auth.currentUser || !svc.auth.currentUser.emailVerified) return currentDbProfile;
 
     const uid = svc.auth.currentUser.uid;
-    const { rtdb, dbMod } = svc;
-    const profRef = dbMod.ref(rtdb, `users/${uid}/profile`);
-
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        if (attempt > 0) {
-          await svc.auth.currentUser.getIdToken(true);
-          await sleepMs(450 * attempt);
-        }
-        const snap = await dbMod.get(profRef);
-        if (snap.exists()) {
-          const val = snap.val();
+        const freshToken = await svc.auth.currentUser.getIdToken(attempt > 0);
+        const val = await rtdbRestJson("GET", `users/${uid}/profile`, undefined, freshToken);
+        if (val && typeof val === "object") {
           currentDbProfile = {
             ...val,
             name: val.name || val.displayName || svc.auth.currentUser.displayName || "Player",
@@ -433,13 +453,15 @@
           return currentDbProfile;
         }
         break;
-      } catch (_) {}
+      } catch (_) {
+        await sleepMs(350 * (attempt + 1));
+      }
     }
     return currentDbProfile;
   }
 
-  // Writes verified player info to /users/{uid}/profile AND reads Name & Email directly back from Firebase DB
-  // with automatic 3x retry to handle the RTDB WebSocket JWT token-propagation window right after verification!
+  // Writes verified player info to /users/{uid}/profile via Authenticated HTTPS REST (zero WebSocket token lag!)
+  // AND immediately fetches Name & Email directly back from Firebase Database!
   async function writeAndFetchPlayerProfileFromDatabase(user, explicitName) {
     const emailLower = (user.email || "").trim().toLowerCase();
     const pendingName = explicitName || getSavedPendingSignupName(emailLower) || user.displayName || "";
@@ -458,22 +480,11 @@
       return currentDbProfile;
     }
 
-    const { rtdb, dbMod } = await getPublicRealtimeDb();
-    await user.getIdToken(true);
-    await sleepMs(250); // Allow Firebase RTDB WebSocket to apply refreshed email_verified=true JWT
-
-    const profRef = dbMod.ref(rtdb, `users/${user.uid}/profile`);
     let lastDbErr = null;
-
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        if (attempt > 0) {
-          await user.getIdToken(true);
-          await sleepMs(500 * attempt);
-        }
-
-        const existingSnap = await dbMod.get(profRef).catch(() => null);
-        const existingVal = existingSnap && existingSnap.exists() ? existingSnap.val() : null;
+        const freshToken = await user.getIdToken(true);
+        const existingVal = await rtdbRestJson("GET", `users/${user.uid}/profile`, undefined, freshToken).catch(() => null);
 
         const finalName =
           explicitName ||
@@ -491,11 +502,10 @@
           lastLoginAt: Date.now()
         };
 
-        await dbMod.set(profRef, profilePayload);
+        await rtdbRestJson("PUT", `users/${user.uid}/profile`, profilePayload, freshToken);
 
-        // Authoritative read straight back from Firebase Realtime Database!
-        const freshDbSnap = await dbMod.get(profRef);
-        const dbData = freshDbSnap.exists() ? freshDbSnap.val() : profilePayload;
+        // Authoritative GET directly back from Firebase Realtime Database!
+        const dbData = (await rtdbRestJson("GET", `users/${user.uid}/profile`, undefined, freshToken)) || profilePayload;
 
         currentDbProfile = {
           ...dbData,
@@ -509,36 +519,39 @@
           localStorage.removeItem(PENDING_NAME_PREFIX + emailLower);
         } catch (_) {}
 
-        if (unsubProfileRef) {
-          unsubProfileRef();
-          unsubProfileRef = null;
-        }
-        unsubProfileRef = dbMod.onValue(profRef, (snap) => {
-          if (snap.exists()) {
-            const v = snap.val();
-            currentDbProfile = {
-              ...v,
-              name: v.name || v.displayName || finalName,
-              email: v.email || emailLower,
-              fetchedFromDatabase: true,
-              dbRulesWarning: false
-            };
-            if (currentVerifiedPlayer) {
-              currentVerifiedPlayer.name = currentDbProfile.name;
-              currentVerifiedPlayer.displayName = currentDbProfile.name;
-              currentVerifiedPlayer.email = currentDbProfile.email;
-            }
-            emitAuthState();
+        try {
+          const { rtdb, dbMod } = await getPublicRealtimeDb();
+          if (unsubProfileRef) {
+            unsubProfileRef();
+            unsubProfileRef = null;
           }
-        });
+          unsubProfileRef = dbMod.onValue(dbMod.ref(rtdb, `users/${user.uid}/profile`), (snap) => {
+            if (snap.exists()) {
+              const v = snap.val();
+              currentDbProfile = {
+                ...v,
+                name: v.name || v.displayName || finalName,
+                email: v.email || emailLower,
+                fetchedFromDatabase: true,
+                dbRulesWarning: false
+              };
+              if (currentVerifiedPlayer) {
+                currentVerifiedPlayer.name = currentDbProfile.name;
+                currentVerifiedPlayer.displayName = currentDbProfile.name;
+                currentVerifiedPlayer.email = currentDbProfile.email;
+              }
+              emitAuthState();
+            }
+          });
+        } catch (_) {}
 
         return currentDbProfile;
       } catch (err) {
         lastDbErr = err;
+        await sleepMs(450 * (attempt + 1));
       }
     }
 
-    // Fallback if Owner hasn't clicked "Copy Firebase Rules -> Publish" for /users yet
     currentDbProfile = {
       uid: user.uid,
       name: fallbackName,
@@ -973,28 +986,40 @@
 
   async function downloadChunkedRtdbPath(rtdb, dbMod, baseNodePath, fallbackName, onProgress) {
     if (typeof onProgress === "function") onProgress(2);
-    const metaSnap = await dbMod.get(dbMod.ref(rtdb, `${baseNodePath}/meta`));
-    if (!metaSnap.exists()) {
+    let meta = await rtdbRestJson("GET", `${baseNodePath}/meta`).catch(() => null);
+    if (!meta && rtdb && dbMod) {
+      const metaSnap = await dbMod.get(dbMod.ref(rtdb, `${baseNodePath}/meta`));
+      if (metaSnap.exists()) meta = metaSnap.val();
+    }
+    if (!meta) {
       throw new Error("Game .ZIP archive was not found in Firebase Realtime Database.");
     }
-    const meta = metaSnap.val();
     const totalChunks = Number(meta.totalChunks || 0);
     if (totalChunks <= 0) throw new Error("Invalid archive metadata.");
 
     const byteParts = new Array(totalChunks);
     for (let idx = 0; idx < totalChunks; idx++) {
-      let cSnap = null;
+      let chunkB64 = null;
       for (let retry = 0; retry < 3; retry++) {
         try {
-          cSnap = await dbMod.get(dbMod.ref(rtdb, `${baseNodePath}/chunks/${idx}`));
-          if (cSnap && cSnap.exists()) break;
+          chunkB64 = await rtdbRestJson("GET", `${baseNodePath}/chunks/${idx}`);
+          if (typeof chunkB64 === "string" && chunkB64.length > 0) break;
         } catch (_) {}
-        await sleepMs(400 * (retry + 1));
+        if (rtdb && dbMod) {
+          try {
+            const cSnap = await dbMod.get(dbMod.ref(rtdb, `${baseNodePath}/chunks/${idx}`));
+            if (cSnap && cSnap.exists()) {
+              chunkB64 = cSnap.val();
+              break;
+            }
+          } catch (_) {}
+        }
+        await sleepMs(350 * (retry + 1));
       }
-      if (!cSnap || !cSnap.exists()) {
+      if (!chunkB64) {
         throw new Error(`Archive chunk #${idx + 1}/${totalChunks} missing — please click Download again.`);
       }
-      byteParts[idx] = b64ToBytes(cSnap.val());
+      byteParts[idx] = b64ToBytes(chunkB64);
       if (typeof onProgress === "function") {
         onProgress(Math.min(99, Math.round(((idx + 1) / totalChunks) * 100)));
       }
