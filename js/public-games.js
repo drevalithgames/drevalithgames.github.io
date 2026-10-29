@@ -1,10 +1,12 @@
 /**
  * ============================================================================
- * DREVALITH GAMES™ — PUBLIC STUDIO SHOWCASE & DIRECT ITCH.IO CATALOG UI (v17)
+ * DREVALITH GAMES™ — PUBLIC STUDIO SHOWCASE & DIRECT ITCH.IO CATALOG UI (v19)
  * ============================================================================
  * - Cleanly renders published games & game updates from the Studio Owner Console
  *   on the public Games page (#live-published-games).
- * - Direct Buy button opens the official itch.io game page in one click.
+ * - Strict Buy Button Enable / Disable / Hide + Automatic Future Release Date
+ *   & "Coming Soon" Guard: NEVER shows an active Buy button before release day
+ *   or when disabled by the Studio Owner.
  * - Zero payment popups, zero player login/signup forms, zero clutter.
  * ============================================================================
  */
@@ -15,6 +17,7 @@
   if (!Store) return;
 
   let currentCatalogGames = [];
+  let catalogLoaded = false;
 
   function esc(str) {
     return String(str ?? "")
@@ -35,9 +38,9 @@
   }
 
   function injectShowcaseStyles() {
-    if (document.getElementById("drevalith-showcase-styles-v17")) return;
+    if (document.getElementById("drevalith-showcase-styles-v18")) return;
     const style = document.createElement("style");
-    style.id = "drevalith-showcase-styles-v17";
+    style.id = "drevalith-showcase-styles-v18";
     style.textContent = `
       #live-published-games {
         display: flex;
@@ -239,29 +242,45 @@
         const hasUpdatesTab = Boolean(game.updateNotes && game.updateNotes.trim());
         const showSubtabs = hasGameplayTab || hasFeaturesTab || hasUpdatesTab;
 
-        const badgeLabel = game.badgeText || "Official Studio Release";
+        const btnState = Store.evaluateBuyButtonState(game);
+        const isDefaultReleaseBadge =
+          !game.badgeText ||
+          /^official studio release/i.test(game.badgeText.trim());
+        const badgeLabel =
+          !btnState.isActive && btnState.schedule.isUnreleased && isDefaultReleaseBadge
+            ? "Upcoming Release • Windows PC"
+            : game.badgeText || "Official Studio Release • Windows PC";
+
         const subtitleLine =
           game.subtitle || game.modes || game.platform || "Windows PC (64-bit)";
-        const itchHref = Store.normalizeItchBuyUrl(game.itchUrl);
-        const buyLabel = game.buyButtonText || "Buy on itch.io ↗";
 
-        const actionButtonsHtml = itchHref
-          ? `
-            <a href="${esc(itchHref)}" target="_blank" rel="noopener noreferrer" class="btn-primary">
-              ${esc(buyLabel)}
+        let actionButtonsHtml = "";
+        if (btnState.isActive) {
+          actionButtonsHtml = `
+            <a href="${esc(btnState.itchHref)}" target="_blank" rel="noopener noreferrer" class="btn-primary">
+              ${esc(btnState.buyLabel)}
             </a>
             <button type="button" class="btn-secondary" onclick="window.switchPage('studio')">
               Studio Info →
             </button>
-          `
-          : `
-            <button type="button" class="btn-disabled" disabled>
-              Coming Soon
+          `;
+        } else if (btnState.renderMode === "hidden") {
+          actionButtonsHtml = `
+            <button type="button" class="btn-secondary" onclick="window.switchPage('studio')">
+              Studio Info →
+            </button>
+          `;
+        } else {
+          actionButtonsHtml = `
+            <button type="button" class="btn-disabled" disabled aria-disabled="true" title="Game not available for purchase yet">
+              <span>🔒</span>
+              <span>${esc(btnState.disabledLabel)}</span>
             </button>
             <button type="button" class="btn-secondary" onclick="window.switchPage('studio')">
               Studio Info →
             </button>
           `;
+        }
 
         const latestUpdatePreview =
           hasUpdatesTab
@@ -276,6 +295,11 @@
               </div>
             `
             : "";
+
+        const displayReleaseLabel =
+          game.releaseDate ||
+          (btnState.schedule && btnState.schedule.formattedDate) ||
+          (btnState.isActive ? "Available Now" : "Coming Soon");
 
         return `
           <div class="release-banner tilt-card drev-game-showcase" data-game-id="${esc(game.id)}">
@@ -367,17 +391,13 @@
                        </div>`
                     : ""
                 }
-                ${
-                  game.releaseDate
-                    ? `<div class="spec-row">
-                         <span class="spec-label">Release</span>
-                         <span class="spec-val">${esc(game.releaseDate)}</span>
-                       </div>`
-                    : ""
-                }
+                <div class="spec-row">
+                  <span class="spec-label">Release</span>
+                  <span class="spec-val">${esc(displayReleaseLabel)}</span>
+                </div>
                 <div class="spec-row">
                   <span class="spec-label">Official Store</span>
-                  <span class="spec-val accent">${itchHref ? "itch.io" : "Coming Soon"}</span>
+                  <span class="spec-val accent">${btnState.isActive ? "Available on itch.io" : "Coming Soon"}</span>
                 </div>
               </div>
             </div>
@@ -397,7 +417,8 @@
     injectShowcaseStyles();
     Store.subscribePublicStore((state) => {
       currentCatalogGames = (state && state.games) || [];
-      renderPublishedGames(Boolean(state && state.loaded));
+      catalogLoaded = Boolean(state && state.loaded);
+      renderPublishedGames(catalogLoaded);
     });
   }
 
