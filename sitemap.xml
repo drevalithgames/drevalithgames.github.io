@@ -12,8 +12,4 @@
     <loc>https://drevalithgames.github.io/studio.html</loc>
     <priority>0.8</priority>
   </url>
-  <url>
-    <loc>https://drevalithgames.github.io/login.html</loc>
-    <priority>0.6</priority>
-  </url>
 </urlset>
